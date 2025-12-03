@@ -21,7 +21,7 @@ except Exception as e:
 # 2. INTERFACE
 # =========================================================
 st.title("🎹 Artist 360° Radar")
-st.markdown("### Module 1 : Marché & Business (Mode Debug)")
+st.markdown("### Module 1 : Marché & Business")
 
 col_search, col_btn = st.columns([3, 1])
 with col_search:
@@ -47,25 +47,23 @@ if search_btn and artist_name:
 
         items = results['artists']['items']
 
-        # B. FILTRAGE INTELLIGENT
-        # On cherche le match le plus proche
-        selected_artist = None
-        
-        # Stratégie 1 : Match exact du nom (ex: "Angèle" == "Angèle")
+        # B. FILTRAGE ET TRI (LA CORRECTION EST ICI)
+        # 1. On ne garde que ceux dont le nom contient ce qu'on cherche
+        candidates = []
         for item in items:
-            if item['name'].lower() == artist_name.lower():
-                selected_artist = item
-                break
+            if artist_name.lower() in item['name'].lower():
+                candidates.append(item)
         
-        # Stratégie 2 : Si pas de match exact, on prend le plus populaire qui contient le nom
-        if not selected_artist:
-            candidates = [i for i in items if artist_name.lower() in i['name'].lower()]
-            if candidates:
-                candidates.sort(key=lambda x: x['popularity'], reverse=True)
-                selected_artist = candidates[0]
-            else:
-                # Stratégie 3 : On prend le #1 de la liste (Désespoir)
-                selected_artist = items[0]
+        # (Si on n'a rien trouvé avec le filtre, on garde la liste brute par sécurité)
+        if not candidates:
+            candidates = items
+
+        # 2. TRI PAR POPULARITÉ (CRUCIAL)
+        # On met le plus populaire tout en haut de la liste (Index 0)
+        candidates.sort(key=lambda x: x['popularity'], reverse=True)
+
+        # 3. SÉLECTION DU GAGNANT
+        selected_artist = candidates[0]
 
         # C. EXTRACTION
         artist_id = selected_artist['id']
@@ -82,12 +80,17 @@ if search_btn and artist_name:
         with head_c2:
             st.subheader(name)
             st.markdown(f"[Ouvrir sur Spotify]({spotify_url})")
-            # --- DEBUG : AFFICHE L'ID ---
-            st.code(f"Spotify ID utilisé : {artist_id}") 
-            st.caption("Si cet ID est '3Vvs253wKOgu1IKkBaoZ7Z', c'est la vraie Angèle.")
+            
+            # CHECK ID : Si c'est la vraie, ça doit matcher
+            target_id = '3Vvs253wKOgu1IKkBaoZ7Z'
+            st.caption(f"ID Trouvé : {artist_id}")
+            if artist_id == target_id:
+                st.success("✅ C'est la VRAIE Angèle !")
+            elif name == "Angèle":
+                st.warning("⚠️ Attention, homonyme détecté (Popularité faible).")
 
     except Exception as e:
-        st.error(f"Erreur CRITIQUE Recherche : {e}")
+        st.error(f"Erreur Recherche : {e}")
         st.stop()
 
     st.divider()
@@ -111,6 +114,16 @@ if search_btn and artist_name:
                 details = sp.album(last['id'])
                 st.write(f"🏢 **Label :** {details['label']}")
                 st.write(f"📅 **Dernière Sortie :** {details['release_date']}")
+                
+                # Détection signature
+                label_txt = details['label'].lower()
+                if any(x in label_txt for x in ["universal", "sony", "warner", "polydor", "columbia"]):
+                    st.success("Signature : **MAJOR**")
+                elif any(x in label_txt for x in ["distrokid", "tunecore", "spinnup"]):
+                    st.info("Signature : **AUTO-PROD**")
+                else:
+                    st.warning("Signature : **INDÉPENDANT**")
+
             else:
                 st.warning("Aucune sortie.")
         except Exception as e:
@@ -118,25 +131,21 @@ if search_btn and artist_name:
 
         st.write("---")
 
-        # --- ÉCOSYSTÈME (LA PARTIE QUI PLANTAIT) ---
+        # --- ÉCOSYSTÈME ---
         st.caption("Écosystème (Voisins)")
         try:
-            # On tente la requête brute sans filtre
             related = sp.artist_related_artists(artist_id)
             
             if related['artists']:
                 names = [a['name'] for a in related['artists'][:5]]
-                st.success("✅ Données récupérées !")
                 st.write("Similaire à :")
                 for n in names:
                     st.write(f"• {n}")
             else:
-                st.warning("⚠️ La liste renvoyée par Spotify est vide (0 voisins).")
+                st.info("Pas de données 'Artistes Similaires' (Trop petit ou bug Spotify).")
                 
         except Exception as e:
-            # AFFICHE L'ERREUR EN ROUGE
-            st.error(f"🚨 ERREUR TECHNIQUE PRÉCISE : {e}")
-            st.caption("Copie-colle ce message rouge à ton assistant.")
+            st.error(f"Erreur Technique : {e}")
 
-    with col_vide1: st.info("Audio (À venir)")
-    with col_vide2: st.info("Sémantique (À venir)")
+    with col_vide1: st.info("Audio (Semaine 2)")
+    with col_vide2: st.info("Sémantique (Semaine 3)")
