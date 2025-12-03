@@ -14,14 +14,14 @@ try:
     auth_manager = SpotifyClientCredentials(client_id=client_id, client_secret=client_secret)
     sp = spotipy.Spotify(auth_manager=auth_manager)
 except Exception as e:
-    st.error("⚠️ Problème de connexion API.")
+    st.error(f"⚠️ CRASH CONNEXION : {e}")
     st.stop()
 
 # =========================================================
 # 2. INTERFACE
 # =========================================================
 st.title("🎹 Artist 360° Radar")
-st.markdown("### Module 1 : Marché & Business")
+st.markdown("### Module 1 : Marché & Business (Mode Debug)")
 
 col_search, col_btn = st.columns([3, 1])
 with col_search:
@@ -38,55 +38,56 @@ if search_btn and artist_name:
     st.divider()
 
     try:
-        # 1. On demande 10 résultats pour être large
-        results = sp.search(q=artist_name, type='artist', limit=10, market='FR')
+        # A. RECHERCHE LARGE (20 résultats)
+        results = sp.search(q=artist_name, type='artist', limit=20, market='FR')
         
         if not results['artists']['items']:
-            st.warning("Artiste introuvable.")
+            st.warning("Aucun artiste trouvé.")
             st.stop()
 
         items = results['artists']['items']
 
-        # --- CORRECTION DU "BUG DUA LIPA" ---
-        # On filtre : on ne garde que les artistes dont le nom contient ce qu'on a tapé
-        # (ex: Si je tape "Angèle", je vire "Dua Lipa")
-        query_lower = artist_name.lower()
+        # B. FILTRAGE INTELLIGENT
+        # On cherche le match le plus proche
+        selected_artist = None
         
-        # Liste des candidats valides (dont le nom matche la recherche)
-        valid_artists = [
-            item for item in items 
-            if query_lower in item['name'].lower()
-        ]
-
-        if valid_artists:
-            # S'il y a des matchs exacts, on prend le plus populaire PARMI EUX
-            valid_artists.sort(key=lambda x: x['popularity'], reverse=True)
-            artist = valid_artists[0]
-        else:
-            # Si aucun nom ne matche (ex: faute de frappe), on revient à l'ancien système (le plus populaire tout court)
-            items.sort(key=lambda x: x['popularity'], reverse=True)
-            artist = items[0]
-
-        # --- EXTRACTION ---
-        artist_id = artist['id']
-        name = artist['name']
-        popularity = artist['popularity']
-        followers = artist['followers']['total']
-        image_url = artist['images'][0]['url'] if artist['images'] else None
-        spotify_url = artist['external_urls']['spotify']
+        # Stratégie 1 : Match exact du nom (ex: "Angèle" == "Angèle")
+        for item in items:
+            if item['name'].lower() == artist_name.lower():
+                selected_artist = item
+                break
         
-        # Affichage En-tête
+        # Stratégie 2 : Si pas de match exact, on prend le plus populaire qui contient le nom
+        if not selected_artist:
+            candidates = [i for i in items if artist_name.lower() in i['name'].lower()]
+            if candidates:
+                candidates.sort(key=lambda x: x['popularity'], reverse=True)
+                selected_artist = candidates[0]
+            else:
+                # Stratégie 3 : On prend le #1 de la liste (Désespoir)
+                selected_artist = items[0]
+
+        # C. EXTRACTION
+        artist_id = selected_artist['id']
+        name = selected_artist['name']
+        popularity = selected_artist['popularity']
+        followers = selected_artist['followers']['total']
+        image_url = selected_artist['images'][0]['url'] if selected_artist['images'] else None
+        spotify_url = selected_artist['external_urls']['spotify']
+        
+        # D. AFFICHAGE EN-TÊTE + DEBUG ID
         head_c1, head_c2 = st.columns([1, 4])
         with head_c1:
             if image_url: st.image(image_url, width=150)
         with head_c2:
             st.subheader(name)
-            if artist['genres']:
-                st.caption(f"Genres : {', '.join(artist['genres'][:3])}")
             st.markdown(f"[Ouvrir sur Spotify]({spotify_url})")
-            
+            # --- DEBUG : AFFICHE L'ID ---
+            st.code(f"Spotify ID utilisé : {artist_id}") 
+            st.caption("Si cet ID est '3Vvs253wKOgu1IKkBaoZ7Z', c'est la vraie Angèle.")
+
     except Exception as e:
-        st.error(f"Erreur recherche : {e}")
+        st.error(f"Erreur CRITIQUE Recherche : {e}")
         st.stop()
 
     st.divider()
@@ -96,11 +97,9 @@ if search_btn and artist_name:
         st.markdown("### 🟢 Marché & Business")
 
         # --- KPIs ---
-        st.caption("Performance")
         kpi1, kpi2 = st.columns(2)
         kpi1.metric("Popularité", f"{popularity}/100")
         kpi2.metric("Followers", f"{followers:,}")
-        
         st.write("---")
 
         # --- LABEL ---
@@ -108,33 +107,36 @@ if search_btn and artist_name:
         try:
             albums = sp.artist_albums(artist_id, album_type='album,single', limit=1, country='FR')
             if albums['items']:
-                last_release = albums['items'][0]
-                album_details = sp.album(last_release['id'])
-                st.write(f"🏢 **Label :** {album_details['label']}")
-                st.write(f"📅 **Sortie :** {album_details['release_date']}")
+                last = albums['items'][0]
+                details = sp.album(last['id'])
+                st.write(f"🏢 **Label :** {details['label']}")
+                st.write(f"📅 **Dernière Sortie :** {details['release_date']}")
             else:
-                st.warning("Aucune sortie trouvée.")
+                st.warning("Aucune sortie.")
         except Exception as e:
-            st.warning(f"Infos Label indisponibles.")
+            st.error(f"Erreur Label : {e}")
 
         st.write("---")
 
-        # --- ÉCOSYSTÈME ---
-        st.caption("Écosystème")
+        # --- ÉCOSYSTÈME (LA PARTIE QUI PLANTAIT) ---
+        st.caption("Écosystème (Voisins)")
         try:
+            # On tente la requête brute sans filtre
             related = sp.artist_related_artists(artist_id)
             
             if related['artists']:
                 names = [a['name'] for a in related['artists'][:5]]
+                st.success("✅ Données récupérées !")
                 st.write("Similaire à :")
                 for n in names:
                     st.write(f"• {n}")
             else:
-                st.warning("Pas assez de données pour l'écosystème.")
+                st.warning("⚠️ La liste renvoyée par Spotify est vide (0 voisins).")
                 
         except Exception as e:
-            st.warning("Données 'Artistes Similaires' non accessibles.")
+            # AFFICHE L'ERREUR EN ROUGE
+            st.error(f"🚨 ERREUR TECHNIQUE PRÉCISE : {e}")
+            st.caption("Copie-colle ce message rouge à ton assistant.")
 
-    # Colonnes vides
-    with col_vide1: st.info("Colonne Audio (Semaine 2)")
-    with col_vide2: st.info("Colonne Sémantique (Semaine 3)")
+    with col_vide1: st.info("Audio (À venir)")
+    with col_vide2: st.info("Sémantique (À venir)")
