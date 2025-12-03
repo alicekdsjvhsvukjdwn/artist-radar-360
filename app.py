@@ -1,12 +1,9 @@
 import streamlit as st
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
-import pandas as pd
 
-# =========================================================
-# 1. CONFIGURATION
-# =========================================================
-st.set_page_config(page_title="Artist 360° Radar", page_icon="🎹", layout="wide")
+# --- CONFIG ---
+st.set_page_config(page_title="Debug Mode", layout="wide")
 
 try:
     client_id = st.secrets["SPOTIPY_CLIENT_ID"]
@@ -14,134 +11,57 @@ try:
     auth_manager = SpotifyClientCredentials(client_id=client_id, client_secret=client_secret)
     sp = spotipy.Spotify(auth_manager=auth_manager)
 except Exception as e:
-    st.error(f"⚠️ CRASH CONNEXION : {e}")
+    st.error(f"Erreur API : {e}")
     st.stop()
 
-# =========================================================
-# 2. INTERFACE
-# =========================================================
-st.title("🎹 Artist 360° Radar")
-st.markdown("### Module 1 : Marché & Business (Version Auto-Repair)")
+st.title("🕵️‍♀️ Inspecteur de Résultats Spotify")
+st.write("Ce script affiche TOUT ce que Spotify renvoie pour une recherche, sans filtre.")
 
-col_search, col_btn = st.columns([3, 1])
-with col_search:
-    artist_name = st.text_input("Nom de l'artiste", placeholder="Ex: Angèle")
-with col_btn:
-    st.write("") 
-    st.write("")
-    search_btn = st.button("Lancer l'audit 🚀")
+query = st.text_input("Recherche brute :", value="Angèle")
 
-# =========================================================
-# 3. MOTEUR D'ANALYSE
-# =========================================================
-if search_btn and artist_name:
+if st.button("Scanner"):
     st.divider()
-
-    selected_artist = None
-    related_artists_data = None # Pour stocker les voisins si on les trouve
-
-    with st.spinner("Recherche et vérification de l'intégrité des données..."):
-        try:
-            # A. RECHERCHE LARGE
-            results = sp.search(q=artist_name, type='artist', limit=10, market='FR')
-            items = results['artists']['items']
-
-            if not items:
-                st.warning("Aucun artiste trouvé.")
-                st.stop()
-
-            # B. TRI PAR POPULARITÉ
-            # On garde ceux qui matchent le nom
-            candidates = [i for i in items if artist_name.lower() in i['name'].lower()]
-            if not candidates: candidates = items # Fallback
+    
+    # 1. On demande 20 résultats sans filtre de marché (pour voir large)
+    try:
+        results = sp.search(q=query, type='artist', limit=20)
+        items = results['artists']['items']
+        
+        st.write(f"🔎 **{len(items)} résultats trouvés** pour '{query}' :")
+        
+        # On teste chaque résultat un par un
+        for i, item in enumerate(items):
             
-            candidates.sort(key=lambda x: x['popularity'], reverse=True)
-
-            # C. BOUCLE DE "SELF-HEALING" (C'est ici la magie)
-            # On teste les candidats un par un pour trouver celui qui n'est pas bugué
-            for candidate in candidates:
+            col1, col2, col3 = st.columns([1, 2, 2])
+            
+            with col1:
+                if item['images']:
+                    st.image(item['images'][0]['url'], width=80)
+                else:
+                    st.write("Pas d'image")
+            
+            with col2:
+                st.subheader(f"{i+1}. {item['name']}")
+                st.caption(f"ID : {item['id']}")
+                st.write(f"Popularité : **{item['popularity']}**")
+                st.write(f"Followers : {item['followers']['total']:,}")
+                
+            with col3:
+                # LE TEST DE VÉRITÉ : On teste les voisins pour cet ID précis
                 try:
-                    # LE TEST CRITIQUE : Est-ce qu'on peut accéder à ses voisins ?
-                    # Si ça plante ici, on passe au 'except' et on essaie le suivant
-                    test_related = sp.artist_related_artists(candidate['id'])
-                    
-                    # Si on arrive ici, c'est que l'artiste est VALIDE
-                    selected_artist = candidate
-                    related_artists_data = test_related # On garde les données pour ne pas refaire la requête
-                    break # On sort de la boucle, on a trouvé le bon !
-                
-                except Exception:
-                    # Si erreur (404 ou autre), on ignore ce candidat et on continue la boucle
-                    continue
-            
-            # Si après la boucle on a rien trouvé de valide, on prend le premier par défaut (tant pis)
-            if not selected_artist:
-                selected_artist = candidates[0]
-                st.error("⚠️ Impossible de trouver un profil 100% fonctionnel. Affichage du profil par défaut (risque d'erreurs).")
+                    related = sp.artist_related_artists(item['id'])
+                    # Si ça marche, on affiche le nombre
+                    count = len(related['artists'])
+                    if count > 0:
+                        st.success(f"✅ Voisins accessibles ({count})")
+                        st.caption(f"Ex: {related['artists'][0]['name']}")
+                    else:
+                        st.warning("⚠️ Liste voisins vide (mais pas d'erreur)")
+                except Exception as e:
+                    # Si ça plante, on l'affiche en ROUGE
+                    st.error(f"❌ CRASH VOISINS : {e}")
 
-            # D. EXTRACTION DES DONNÉES FINALES
-            artist_id = selected_artist['id']
-            name = selected_artist['name']
-            popularity = selected_artist['popularity']
-            followers = selected_artist['followers']['total']
-            image_url = selected_artist['images'][0]['url'] if selected_artist['images'] else None
-            spotify_url = selected_artist['external_urls']['spotify']
-            
-            # Affichage En-tête
-            head_c1, head_c2 = st.columns([1, 4])
-            with head_c1:
-                if image_url: st.image(image_url, width=150)
-            with head_c2:
-                st.subheader(name)
-                st.caption(f"ID Validé : {artist_id}")
-                st.markdown(f"[Ouvrir sur Spotify]({spotify_url})")
-                
-                # Check Angèle
-                if artist_id == '3Vvs253wKOgu1IKkBaoZ7Z':
-                    st.success("✅ Profil Officiel Certifié (Vraie Angèle)")
+            st.divider()
 
-        except Exception as e:
-            st.error(f"Erreur Critique : {e}")
-            st.stop()
-
-    st.divider()
-    col_market, col_vide1, col_vide2 = st.columns(3)
-
-    with col_market:
-        st.markdown("### 🟢 Marché & Business")
-
-        # --- KPIs ---
-        kpi1, kpi2 = st.columns(2)
-        kpi1.metric("Popularité", f"{popularity}/100")
-        kpi2.metric("Followers", f"{followers:,}")
-        st.write("---")
-
-        # --- LABEL ---
-        st.caption("Structure")
-        try:
-            albums = sp.artist_albums(artist_id, album_type='album,single', limit=1, country='FR')
-            if albums['items']:
-                last = albums['items'][0]
-                details = sp.album(last['id'])
-                st.write(f"🏢 **Label :** {details['label']}")
-                st.write(f"📅 **Sortie :** {details['release_date']}")
-            else:
-                st.warning("Aucune sortie.")
-        except Exception as e:
-            st.warning("Info Label indisponible")
-
-        st.write("---")
-
-        # --- ÉCOSYSTÈME ---
-        st.caption("Écosystème (Voisins)")
-        # Ici on utilise les données qu'on a DÉJÀ récupérées pendant le test (optimisation)
-        if related_artists_data and related_artists_data['artists']:
-            names = [a['name'] for a in related_artists_data['artists'][:5]]
-            st.write("Similaire à :")
-            for n in names:
-                st.write(f"• {n}")
-        else:
-            st.info("Pas d'artistes similaires trouvés.")
-
-    with col_vide1: st.info("Audio (Semaine 2)")
-    with col_vide2: st.info("Sémantique (Semaine 3)")
+    except Exception as e:
+        st.error(f"Erreur globale : {e}")
