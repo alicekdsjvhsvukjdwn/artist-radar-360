@@ -3,23 +3,76 @@ import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
 import pandas as pd
 import plotly.express as px
+import requests
+import librosa
+import numpy as np
+import os
 
-# --- CONFIGURATION DE LA PAGE ---
+# --- CONFIGURATION ---
 st.set_page_config(page_title="Artist 360° Radar", page_icon="🎹", layout="wide")
 
 # --- CONNEXION SPOTIFY ---
 try:
-    client_id = st.secrets["SPOTIPY_CLIENT_ID"]
-    client_secret = st.secrets["SPOTIPY_CLIENT_SECRET"]
-    auth_manager = SpotifyClientCredentials(client_id=client_id, client_secret=client_secret)
+    sp_id = st.secrets["SPOTIPY_CLIENT_ID"]
+    sp_secret = st.secrets["SPOTIPY_CLIENT_SECRET"]
+    auth_manager = SpotifyClientCredentials(client_id=sp_id, client_secret=sp_secret)
     sp = spotipy.Spotify(auth_manager=auth_manager)
-except Exception as e:
-    st.error("⚠️ Erreur de connexion : Vérifie tes clés dans les Secrets Streamlit.")
+except:
+    st.error("⚠️ Clés Spotify manquantes.")
     st.stop()
+
+# --- FONCTIONS AUDIO (Le Cœur du Réacteur) ---
+
+def get_itunes_preview(artist_name):
+    """Cherche l'extrait audio (30s) le plus pertinent sur iTunes"""
+    # L'API iTunes ne demande pas de clé !
+    url = f"https://itunes.apple.com/search?term={artist_name}&media=music&entity=song&limit=5"
+    response = requests.get(url).json()
+    
+    if response['resultCount'] > 0:
+        # On prend le premier résultat
+        track = response['results'][0]
+        return {
+            'title': track['trackName'],
+            'preview_url': track['previewUrl'], # Le lien vers le fichier audio
+            'cover': track['artworkUrl100']
+        }
+    return None
+
+def analyze_audio_signal(preview_url):
+    """Télécharge et analyse le signal audio avec Librosa"""
+    
+    # 1. Téléchargement du fichier temporaire
+    doc = requests.get(preview_url)
+    with open("temp_audio.m4a", 'wb') as f:
+        f.write(doc.content)
+    
+    # 2. Chargement dans Librosa (Transforme le son en tableau de chiffres)
+    # y = le signal audio, sr = sample rate
+    y, sr = librosa.load("temp_audio.m4a", duration=30)
+    
+    # 3. Calculs Physiques (Signal Processing)
+    
+    # A. Tempo (BPM)
+    tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+    
+    # B. Énergie (RMS - Root Mean Square) -> Volume/Puissance perçue
+    rms = librosa.feature.rms(y=y)
+    avg_energy = np.mean(rms)
+    
+    # C. "Brillance" (Spectral Centroid) -> Son étouffé vs Son clair/Aigu
+    # Un centroid haut = son "brillant" (Pop/Electro). Bas = son "sombre" (Lo-fi/Trap).
+    spectral_centroids = librosa.feature.spectral_centroid(y=y, sr=sr)[0]
+    avg_brightness = np.mean(spectral_centroids)
+    
+    # Nettoyage du fichier temporaire
+    os.remove("temp_audio.m4a")
+    
+    return tempo, avg_energy, avg_brightness, y, sr
 
 # --- INTERFACE ---
 st.title("🎹 Artist 360° Radar")
-st.markdown("### Analyse Data & Cognitive en temps réel")
+st.markdown("### Analyse de Signal Audio Réel (Signal Processing)")
 
 col1, col2 = st.columns([3, 1])
 with col1:
@@ -29,93 +82,54 @@ with col2:
     st.write("")
     search_btn = st.button("Lancer l'audit 🚀")
 
-# --- LOGIQUE D'ANALYSE ---
 if search_btn and artist_name:
     st.divider()
     
-    try:
-        # 1. Recherche de l'artiste
-        results = sp.search(q=artist_name, type='artist', limit=1)
+    # 1. INFO ARTISTE (Spotify)
+    results = sp.search(q=artist_name, type='artist', limit=1)
+    if results['artists']['items']:
+        artist = results['artists']['items'][0]
+        st.subheader(f"Artiste : {artist['name']}")
+        st.write(f"Popularité : {artist['popularity']}/100")
+    
+    st.divider()
+
+    # 2. ANALYSE AUDIO (iTunes + Librosa)
+    st.markdown("### 🧬 Analyse du Signal Audio (Extrait 30s)")
+    
+    with st.spinner("Téléchargement et analyse du signal en cours... (ça peut prendre 10s)"):
+        preview_data = get_itunes_preview(artist_name)
         
-        if results['artists']['items']:
-            artist = results['artists']['items'][0]
-            artist_id = artist['id']
+        if preview_data and preview_data['preview_url']:
+            col_audio_1, col_audio_2 = st.columns([1, 2])
             
-            # Données de base
-            name = artist['name']
-            popularity = artist['popularity']
-            followers = artist['followers']['total']
-            genres = artist['genres']
-            image_url = artist['images'][0]['url'] if artist['images'] else None
-            spotify_url = artist['external_urls']['spotify']
+            with col_audio_1:
+                st.image(preview_data['cover'], width=150)
+                st.caption(f"Titre analysé : **{preview_data['title']}**")
+                # Lecteur Audio pour vérifier
+                st.audio(preview_data['preview_url'])
 
-            # Affichage En-tête
-            head_c1, head_c2 = st.columns([1, 4])
-            with head_c1:
-                if image_url: st.image(image_url, width=150)
-            with head_c2:
-                st.subheader(f"Analyse de : {name}")
-                if genres: st.markdown(f"**Genres :** {', '.join(genres[:3])}")
-                st.markdown(f"[Écouter sur Spotify]({spotify_url})")
-
-            st.divider()
-
-            # --- RÉCUPÉRATION DE L'ADN SONORE (NOUVEAU) ---
-            # On récupère les 10 tops titres
-            top_tracks = sp.artist_top_tracks(artist_id)
-            track_ids = [track['id'] for track in top_tracks['tracks']]
-            
-            # On récupère les caractéristiques audio (Danceability, Energy, Valence...)
-            audio_features = sp.audio_features(track_ids)
-            df = pd.DataFrame(audio_features)
-            
-            # Calcul des moyennes (C'est là que tu fais des Stats !)
-            avg_danceability = df['danceability'].mean()
-            avg_energy = df['energy'].mean()
-            avg_valence = df['valence'].mean() # Bonheur/Tristesse
-            avg_tempo = df['tempo'].mean()
-
-            # --- VISUALISATION DASHBOARD ---
-            c1, c2, c3 = st.columns(3)
-
-            # COLONNE 1 : DATA MARCHÉ & AUDIO
-            with c1:
-                st.markdown("### 🟢 Marché & Audio")
+            with col_audio_2:
+                # Lancement de l'analyse Librosa
+                tempo, energy, brightness, y, sr = analyze_audio_signal(preview_data['preview_url'])
                 
-                # KPIs
-                kpi1, kpi2 = st.columns(2)
-                kpi1.metric("Popularité", f"{popularity}/100")
-                kpi2.metric("Followers", f"{followers:,}")
+                # Normalisation des valeurs pour l'affichage (c'est des maths approximatives pour la démo)
+                norm_energy = min(energy * 1000, 100) # L'énergie est souvent toute petite, on multiplie
+                norm_brightness = min(brightness / 50, 100) # Le centroid est souvent vers 2000-4000Hz
                 
-                st.write("---")
-                st.markdown("**🧬 ADN Sonore (Moyenne Top 10)**")
+                # Affichage des KPIs
+                kpi1, kpi2, kpi3 = st.columns(3)
+                kpi1.metric("Tempo (BPM)", f"{int(tempo)}")
+                kpi2.metric("Énergie (RMS)", f"{norm_energy:.1f}/100")
+                kpi3.metric("Brillance (Hz)", f"{int(brightness)}")
                 
-                # Graphique Radar (Spider Chart)
-                categories = ['Dansant', 'Énergie', 'Positivité (Valence)']
-                values = [avg_danceability, avg_energy, avg_valence]
-                
-                df_radar = pd.DataFrame(dict(
-                    r=values,
-                    theta=categories
-                ))
-                fig = px.line_polar(df_radar, r='r', theta='theta', line_close=True, range_r=[0,1])
-                fig.update_traces(fill='toself')
-                st.plotly_chart(fig, use_container_width=True)
+                st.info(f"**Interprétation Cognitive :** Un BPM de {int(tempo)} avec une brillance de {int(brightness)} Hz suggère une ambiance {'Dynamique/Claire' if brightness > 2500 else 'Sombre/Lourde'}.")
 
-                # Interprétation Cognitive (Automatique)
-                st.info(f"❤️ **Analyse Émotionnelle :** L'indice de positivité est de **{avg_valence:.2f}/1**. "
-                        f"{'Musique plutôt Joyeuse/Solaire ☀️' if avg_valence > 0.5 else 'Musique plutôt Mélancolique/Sombre 🌧️'}")
-
-            # COLONNE 2 & 3
-            with c2:
-                st.markdown("### 🟡 Social (YouTube)")
-                st.warning("À venir...")
-            with c3:
-                st.markdown("### 🔴 Presse (Web)")
-                st.warning("À venir...")
+            # 3. VISUALISATION DE L'ONDE (Waveform)
+            st.markdown("**Visualisation de l'Onde Sonore :**")
+            # On réduit les points pour que le graph soit léger
+            df_wave = pd.DataFrame(y[::100], columns=['Amplitude']) 
+            st.line_chart(df_wave)
 
         else:
-            st.error("Artiste introuvable.")
-
-    except Exception as e:
-        st.error(f"Erreur technique : {e}")
+            st.warning("Aucun extrait audio disponible sur iTunes pour cet artiste.")
