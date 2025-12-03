@@ -4,7 +4,7 @@ from spotipy.oauth2 import SpotifyClientCredentials
 import pandas as pd
 
 # =========================================================
-# 1. CONFIGURATION & AUTHENTIFICATION
+# 1. CONFIGURATION
 # =========================================================
 st.set_page_config(page_title="Artist 360° Radar", page_icon="🎹", layout="wide")
 
@@ -14,36 +14,37 @@ try:
     auth_manager = SpotifyClientCredentials(client_id=client_id, client_secret=client_secret)
     sp = spotipy.Spotify(auth_manager=auth_manager)
 except Exception as e:
-    st.error("⚠️ Problème de connexion API. Vérifie tes clés.")
+    st.error("⚠️ Problème de connexion API.")
     st.stop()
 
 # =========================================================
 # 2. INTERFACE
 # =========================================================
 st.title("🎹 Artist 360° Radar")
-st.markdown("### Module 1 : Marché & Business (Version Stable)")
+st.markdown("### Module 1 : Marché & Business")
 
 col_search, col_btn = st.columns([3, 1])
 with col_search:
-    artist_name = st.text_input("Nom de l'artiste", placeholder="Ex: La Fève")
+    artist_name = st.text_input("Nom de l'artiste", placeholder="Ex: Angèle")
 with col_btn:
     st.write("") 
     st.write("")
     search_btn = st.button("Lancer l'audit 🚀")
 
 # =========================================================
-# 3. LE MOTEUR SÉCURISÉ
+# 3. MOTEUR D'ANALYSE
 # =========================================================
 if search_btn and artist_name:
     st.divider()
 
-    # --- BLOC A : RECHERCHE IDENTITÉ (CRITIQUE) ---
-    # Si ça plante ici, on arrête tout (normal).
     try:
-        results = sp.search(q=artist_name, type='artist', limit=1)
+        # --- CORRECTION 1 : ON AJOUTE market='FR' ---
+        # Ça force Spotify à chercher l'artiste populaire en France
+        results = sp.search(q=artist_name, type='artist', limit=1, market='FR')
+        
         if not results['artists']['items']:
             st.warning("Artiste introuvable.")
-            st.stop() # On arrête proprement
+            st.stop()
 
         artist = results['artists']['items'][0]
         artist_id = artist['id']
@@ -59,78 +60,64 @@ if search_btn and artist_name:
             if image_url: st.image(image_url, width=150)
         with head_c2:
             st.subheader(name)
+            # On affiche l'ID pour vérifier qu'on a la bonne Angèle
+            st.caption(f"Spotify ID: {artist_id}") 
             st.markdown(f"[Ouvrir sur Spotify]({spotify_url})")
             
     except Exception as e:
-        st.error(f"Erreur lors de la recherche : {e}")
+        st.error(f"Erreur recherche : {e}")
         st.stop()
 
     st.divider()
-    
-    # On prépare les colonnes pour l'affichage
     col_market, col_vide1, col_vide2 = st.columns(3)
 
     with col_market:
         st.markdown("### 🟢 Marché & Business")
 
-        # --- BLOC B : AFFICHAGE KPIs (SIMPLE) ---
+        # --- KPIs ---
         st.caption("Performance")
         kpi1, kpi2 = st.columns(2)
         kpi1.metric("Popularité", f"{popularity}/100")
         kpi2.metric("Followers", f"{followers:,}")
         
-        if popularity > 50:
-            st.success("Statut : **Confirmé**")
-        elif popularity > 20:
-            st.info("Statut : **Développement**")
-        else:
-            st.write("Statut : **Démarrage**")
-        
         st.write("---")
 
-        # --- BLOC C : LE LABEL (SÉCURISÉ) ---
-        # Si ce bloc plante, on affiche juste "Info non dispo"
+        # --- LABEL ---
         st.caption("Structure")
         try:
-            albums = sp.artist_albums(artist_id, album_type='album,single', limit=1)
+            # On cherche aussi sur le marché FR pour être cohérent
+            albums = sp.artist_albums(artist_id, album_type='album,single', limit=1, country='FR')
             if albums['items']:
                 last_release = albums['items'][0]
                 album_details = sp.album(last_release['id'])
-                
-                label = album_details['label']
-                date = album_details['release_date']
-                
-                st.write(f"🏢 **Label :** {label}")
-                st.write(f"📅 **Sortie :** {date}")
-                
-                # Détection simple
-                if any(x in label for x in ["Universal", "Sony", "Warner"]):
-                    st.success("Signature : **Major**")
-                elif any(x in label for x in ["DistroKid", "TuneCore"]):
-                    st.info("Signature : **Indépendant**")
+                st.write(f"🏢 **Label :** {album_details['label']}")
+                st.write(f"📅 **Sortie :** {album_details['release_date']}")
             else:
                 st.warning("Aucune sortie trouvée.")
         except Exception as e:
-            st.warning("Infos Label indisponibles.")
+            st.warning(f"Infos Label indisponibles : {e}")
 
         st.write("---")
 
-        # --- BLOC D : LES VOISINS (CELUI QUI PLANTAIT) ---
-        # Si ce bloc plante (Erreur 404), on l'ignore silencieusement.
+        # --- CORRECTION 2 : DEBUGGAGE VOISINS ---
         st.caption("Écosystème")
         try:
             related = sp.artist_related_artists(artist_id)
+            
             if related['artists']:
                 names = [a['name'] for a in related['artists'][:5]]
                 st.write("Similaire à :")
-                st.markdown(f"*{', '.join(names)}*")
+                # On met des puces pour que ce soit lisible
+                for n in names:
+                    st.write(f"• {n}")
             else:
-                st.write("Pas encore de données 'Artistes Similaires'.")
+                # Si la liste est vide mais sans erreur technique
+                st.warning("Spotify ne renvoie aucun artiste similaire (Liste vide).")
+                
         except Exception as e:
-            st.info("Algorithme de recommandation insuffisant pour cet artiste.")
+            # ICI on affiche l'erreur technique exacte en rouge
+            st.error(f"BUG TECHNIQUE : {e}")
 
-    # Les autres colonnes restent vides pour l'instant
-    with col_vide1:
-        st.write("Colonne Audio (à venir)")
-    with col_vide2:
-        st.write("Colonne Sémantique (à venir)")
+    # Colonnes vides
+    with col_vide1: st.info("Colonne Audio (Semaine 2)")
+    with col_vide2: st.info("Colonne Sémantique (Semaine 3)")
