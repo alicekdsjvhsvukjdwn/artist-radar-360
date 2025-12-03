@@ -2,134 +2,189 @@ import streamlit as st
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
 import pandas as pd
-import plotly.express as px
-import requests
-import librosa
-import numpy as np
-import os
 
-# --- CONFIGURATION ---
+# =========================================================
+# 1. CONFIGURATION DE LA PAGE
+# =========================================================
 st.set_page_config(page_title="Artist 360° Radar", page_icon="🎹", layout="wide")
 
-# --- CONNEXION SPOTIFY ---
+# =========================================================
+# 2. CONNEXION API (AUTHENTIFICATION)
+# =========================================================
 try:
-    sp_id = st.secrets["SPOTIPY_CLIENT_ID"]
-    sp_secret = st.secrets["SPOTIPY_CLIENT_SECRET"]
-    auth_manager = SpotifyClientCredentials(client_id=sp_id, client_secret=sp_secret)
+    # Récupération des clés dans le coffre-fort Streamlit
+    client_id = st.secrets["SPOTIPY_CLIENT_ID"]
+    client_secret = st.secrets["SPOTIPY_CLIENT_SECRET"]
+    
+    # Connexion à Spotify
+    auth_manager = SpotifyClientCredentials(client_id=client_id, client_secret=client_secret)
     sp = spotipy.Spotify(auth_manager=auth_manager)
-except:
-    st.error("⚠️ Clés Spotify manquantes.")
+except Exception as e:
+    st.error("⚠️ Erreur de connexion : Vérifie tes clés API dans les Secrets.")
     st.stop()
 
-# --- FONCTIONS AUDIO (Le Cœur du Réacteur) ---
-
-def get_itunes_preview(artist_name):
-    """Cherche l'extrait audio (30s) le plus pertinent sur iTunes"""
-    # L'API iTunes ne demande pas de clé !
-    url = f"https://itunes.apple.com/search?term={artist_name}&media=music&entity=song&limit=5"
-    response = requests.get(url).json()
-    
-    if response['resultCount'] > 0:
-        # On prend le premier résultat
-        track = response['results'][0]
-        return {
-            'title': track['trackName'],
-            'preview_url': track['previewUrl'], # Le lien vers le fichier audio
-            'cover': track['artworkUrl100']
-        }
-    return None
-
-def analyze_audio_signal(preview_url):
-    """Télécharge et analyse le signal audio avec Librosa"""
-    
-    # 1. Téléchargement du fichier temporaire
-    doc = requests.get(preview_url)
-    with open("temp_audio.m4a", 'wb') as f:
-        f.write(doc.content)
-    
-    # 2. Chargement dans Librosa (Transforme le son en tableau de chiffres)
-    # y = le signal audio, sr = sample rate
-    y, sr = librosa.load("temp_audio.m4a", duration=30)
-    
-    # 3. Calculs Physiques (Signal Processing)
-    
-    # A. Tempo (BPM)
-    tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
-    
-    # B. Énergie (RMS - Root Mean Square) -> Volume/Puissance perçue
-    rms = librosa.feature.rms(y=y)
-    avg_energy = np.mean(rms)
-    
-    # C. "Brillance" (Spectral Centroid) -> Son étouffé vs Son clair/Aigu
-    # Un centroid haut = son "brillant" (Pop/Electro). Bas = son "sombre" (Lo-fi/Trap).
-    spectral_centroids = librosa.feature.spectral_centroid(y=y, sr=sr)[0]
-    avg_brightness = np.mean(spectral_centroids)
-    
-    # Nettoyage du fichier temporaire
-    os.remove("temp_audio.m4a")
-    
-    return tempo, avg_energy, avg_brightness, y, sr
-
-# --- INTERFACE ---
+# =========================================================
+# 3. INTERFACE UTILISATEUR (HEADER)
+# =========================================================
 st.title("🎹 Artist 360° Radar")
-st.markdown("### Analyse de Signal Audio Réel (Signal Processing)")
+st.markdown("### Module 1 : Analyse Marché & Business Intelligence")
 
-col1, col2 = st.columns([3, 1])
-with col1:
-    artist_name = st.text_input("Nom de l'artiste", placeholder="Ex: La Fève")
-with col2:
-    st.write("")
+# Barre de recherche
+col_search, col_btn = st.columns([3, 1])
+with col_search:
+    artist_name = st.text_input("Nom de l'artiste", placeholder="Ex: La Fève, Angèle, Freeze Corleone...")
+with col_btn:
+    st.write("") # Espace pour aligner
     st.write("")
     search_btn = st.button("Lancer l'audit 🚀")
 
+# =========================================================
+# 4. LOGIQUE D'ANALYSE (LE CERVEAU)
+# =========================================================
 if search_btn and artist_name:
     st.divider()
     
-    # 1. INFO ARTISTE (Spotify)
-    results = sp.search(q=artist_name, type='artist', limit=1)
-    if results['artists']['items']:
-        artist = results['artists']['items'][0]
-        st.subheader(f"Artiste : {artist['name']}")
-        st.write(f"Popularité : {artist['popularity']}/100")
-    
-    st.divider()
-
-    # 2. ANALYSE AUDIO (iTunes + Librosa)
-    st.markdown("### 🧬 Analyse du Signal Audio (Extrait 30s)")
-    
-    with st.spinner("Téléchargement et analyse du signal en cours... (ça peut prendre 10s)"):
-        preview_data = get_itunes_preview(artist_name)
+    try:
+        # --- A. RECHERCHE DE L'ARTISTE ---
+        results = sp.search(q=artist_name, type='artist', limit=1)
         
-        if preview_data and preview_data['preview_url']:
-            col_audio_1, col_audio_2 = st.columns([1, 2])
+        if not results['artists']['items']:
+            st.error("Artiste introuvable.")
+            st.stop()
             
-            with col_audio_1:
-                st.image(preview_data['cover'], width=150)
-                st.caption(f"Titre analysé : **{preview_data['title']}**")
-                # Lecteur Audio pour vérifier
-                st.audio(preview_data['preview_url'])
+        artist = results['artists']['items'][0]
+        artist_id = artist['id']
 
-            with col_audio_2:
-                # Lancement de l'analyse Librosa
-                tempo, energy, brightness, y, sr = analyze_audio_signal(preview_data['preview_url'])
-                
-                # Normalisation des valeurs pour l'affichage (c'est des maths approximatives pour la démo)
-                norm_energy = min(energy * 1000, 100) # L'énergie est souvent toute petite, on multiplie
-                norm_brightness = min(brightness / 50, 100) # Le centroid est souvent vers 2000-4000Hz
-                
-                # Affichage des KPIs
-                kpi1, kpi2, kpi3 = st.columns(3)
-                kpi1.metric("Tempo (BPM)", f"{int(tempo)}")
-                kpi2.metric("Énergie (RMS)", f"{norm_energy:.1f}/100")
-                kpi3.metric("Brillance (Hz)", f"{int(brightness)}")
-                
-                st.info(f"**Interprétation Cognitive :** Un BPM de {int(tempo)} avec une brillance de {int(brightness)} Hz suggère une ambiance {'Dynamique/Claire' if brightness > 2500 else 'Sombre/Lourde'}.")
+        # --- B. EXTRACTION DES DONNÉES IDENTITÉ ---
+        name = artist['name']
+        popularity = artist['popularity']            # Score 0-100
+        followers = artist['followers']['total']     # Nombre d'abonnés
+        genres = artist['genres']                    # Styles musicaux
+        image_url = artist['images'][0]['url'] if artist['images'] else None
+        spotify_url = artist['external_urls']['spotify']
 
-            # 3. VISUALISATION DE L'ONDE (Waveform)
-            st.markdown("**Visualisation de l'Onde Sonore :**")
-            # On réduit les points pour que le graph soit léger
-            df_wave = pd.DataFrame(y[::100], columns=['Amplitude']) 
-            st.line_chart(df_wave)
+        # --- C. EXTRACTION DES DONNÉES BUSINESS (Le Spyware) ---
+        # On cherche le dernier album/single sorti pour voir le Copyright
+        albums = sp.artist_albums(artist_id, album_type='album,single', limit=1)
+        
+        label_name = "Inconnu"
+        release_date = "Inconnue"
+        copyright_text = "N/A"
+        
+        if albums['items']:
+            last_release = albums['items'][0]
+            # ASTUCE : Il faut refaire une requête sur l'album précis pour avoir le Label
+            album_details = sp.album(last_release['id'])
+            
+            label_name = album_details['label']
+            release_date = album_details['release_date']
+            if album_details['copyrights']:
+                copyright_text = album_details['copyrights'][0]['text']
 
-        else:
-            st.warning("Aucun extrait audio disponible sur iTunes pour cet artiste.")
+        # --- D. EXTRACTION DU RÉSEAU (Graphe Social) ---
+        related_artists = sp.artist_related_artists(artist_id)
+        related_names = []
+        if related_artists['artists']:
+            # On prend les 5 premiers noms
+            related_names = [art['name'] for art in related_artists['artists'][:5]]
+
+        # =========================================================
+        # 5. AFFICHAGE DU DASHBOARD
+        # =========================================================
+        
+        # --- EN-TÊTE ---
+        head_c1, head_c2 = st.columns([1, 4])
+        with head_c1:
+            if image_url: st.image(image_url, width=150)
+        with head_c2:
+            st.subheader(f"Analyse de : {name}")
+            if genres:
+                st.markdown(f"**Genres détectés :** {', '.join(genres[:3])}")
+            st.markdown(f"[Écouter sur Spotify]({spotify_url})")
+
+        st.divider()
+
+        # CRÉATION DES 3 COLONNES PRINCIPALES
+        # (Pour l'instant, on ne remplit que la 1ère comme demandé)
+        col_market, col_audio, col_semantic = st.columns(3)
+
+        # ---------------------------------------------------------
+        # COLONNE 1 : MARCHÉ & BUSINESS (Module Complet)
+        # ---------------------------------------------------------
+        with col_market:
+            st.markdown("### 🟢 Marché & Business")
+            
+            # 1. INDICATEURS DE PERFORMANCE (KPIs)
+            st.caption("Performance")
+            kpi1, kpi2 = st.columns(2)
+            kpi1.metric("Popularité", f"{popularity}/100")
+            kpi2.metric("Followers", f"{followers:,}")
+            
+            # Analyse Cognitive du Ratio
+            ratio = 0
+            if followers > 0:
+                # Ratio arbitraire pour l'exemple
+                pass 
+            
+            if popularity > 80:
+                st.success("Statut : **Mainstream / Star 🌟**")
+            elif popularity > 50:
+                st.info("Statut : **Confirmé / En croissance 📈**")
+            elif popularity > 20:
+                st.warning("Statut : **Émergent / Développement 🌱**")
+            else:
+                st.write("Statut : **Niche / Démarrage 🥚**")
+
+            st.write("---")
+
+            # 2. INTELLIGENCE ÉCONOMIQUE (Label & Sorties)
+            st.caption("Structure & Juridique")
+            st.write(f"🏢 **Label/Distrib :** {label_name}")
+            st.write(f"📅 **Dernière sortie :** {release_date}")
+            
+            # Analyse automatique (Major vs Indé)
+            majors = ["Universal", "Sony", "Warner", "Polydor", "Columbia", "RCA"]
+            indies = ["DistroKid", "TuneCore", "Spinnup", "Ditto", "CD Baby"]
+            
+            # On vérifie si un mot-clé est dans le nom du label
+            is_major = any(m in label_name for m in majors)
+            is_indie = any(i in label_name for i in indies)
+
+            if is_major:
+                st.success("✅ **Signature Probable : MAJOR** (Gros Budget)")
+            elif is_indie:
+                st.info("🆓 **Signature : AUTO-PROD / INDÉ** (Liberté)")
+            else:
+                st.warning("🏢 **Signature : LABEL INDÉPENDANT** (Structure)")
+
+            st.expander("Voir le Copyright légal").write(copyright_text)
+
+            st.write("---")
+
+            # 3. ÉCOSYSTÈME (Les voisins)
+            st.caption("Graphe Social (Concurrents/Feats)")
+            if related_names:
+                # On affiche ça sous forme de petits tags
+                st.write("L'algorithme l'associe à :")
+                st.markdown(f"*{', '.join(related_names)}*")
+            else:
+                st.write("Pas assez de données réseau.")
+
+        # ---------------------------------------------------------
+        # COLONNE 2 : AUDIO (Vide pour l'instant)
+        # ---------------------------------------------------------
+        with col_audio:
+            st.markdown("### 🟡 Signal Audio")
+            st.info("Module en construction (Semaine 2)...")
+            st.write("Ici s'afficheront : BPM, Énergie, Waveform.")
+
+        # ---------------------------------------------------------
+        # COLONNE 3 : SÉMANTIQUE (Vide pour l'instant)
+        # ---------------------------------------------------------
+        with col_semantic:
+            st.markdown("### 🔴 Image & Perception")
+            st.info("Module en construction (Semaine 3)...")
+            st.write("Ici s'afficheront : Mots-clés, Sentiments, Tags.")
+
+    except Exception as e:
+        st.error(f"Une erreur technique est survenue : {e}")
