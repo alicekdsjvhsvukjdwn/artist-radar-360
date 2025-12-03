@@ -38,22 +38,36 @@ if search_btn and artist_name:
     st.divider()
 
     try:
-        # --- CORRECTION MAJEURE : RECHERCHE INTELLIGENTE ---
-        # 1. On demande les 5 premiers résultats (pas juste 1)
-        results = sp.search(q=artist_name, type='artist', limit=5, market='FR')
+        # 1. On demande 10 résultats pour être large
+        results = sp.search(q=artist_name, type='artist', limit=10, market='FR')
         
         if not results['artists']['items']:
             st.warning("Artiste introuvable.")
             st.stop()
 
-        # 2. TRI PAR POPULARITÉ (Le fix est ici !)
-        # On trie la liste pour prendre l'artiste qui a le plus gros score de popularité
-        # Ça évite de tomber sur une "Angèle" inconnue qui a 0 followers
         items = results['artists']['items']
-        items.sort(key=lambda x: x['popularity'], reverse=True)
-        artist = items[0] # On prend le gagnant (la Star)
 
-        # Extraction des données
+        # --- CORRECTION DU "BUG DUA LIPA" ---
+        # On filtre : on ne garde que les artistes dont le nom contient ce qu'on a tapé
+        # (ex: Si je tape "Angèle", je vire "Dua Lipa")
+        query_lower = artist_name.lower()
+        
+        # Liste des candidats valides (dont le nom matche la recherche)
+        valid_artists = [
+            item for item in items 
+            if query_lower in item['name'].lower()
+        ]
+
+        if valid_artists:
+            # S'il y a des matchs exacts, on prend le plus populaire PARMI EUX
+            valid_artists.sort(key=lambda x: x['popularity'], reverse=True)
+            artist = valid_artists[0]
+        else:
+            # Si aucun nom ne matche (ex: faute de frappe), on revient à l'ancien système (le plus populaire tout court)
+            items.sort(key=lambda x: x['popularity'], reverse=True)
+            artist = items[0]
+
+        # --- EXTRACTION ---
         artist_id = artist['id']
         name = artist['name']
         popularity = artist['popularity']
@@ -67,7 +81,6 @@ if search_btn and artist_name:
             if image_url: st.image(image_url, width=150)
         with head_c2:
             st.subheader(name)
-            # On affiche les genres pour confirmer que c'est la bonne personne
             if artist['genres']:
                 st.caption(f"Genres : {', '.join(artist['genres'][:3])}")
             st.markdown(f"[Ouvrir sur Spotify]({spotify_url})")
@@ -120,7 +133,7 @@ if search_btn and artist_name:
                 st.warning("Pas assez de données pour l'écosystème.")
                 
         except Exception as e:
-            st.warning("Données 'Artistes Similaires' non accessibles pour cet ID.")
+            st.warning("Données 'Artistes Similaires' non accessibles.")
 
     # Colonnes vides
     with col_vide1: st.info("Colonne Audio (Semaine 2)")
