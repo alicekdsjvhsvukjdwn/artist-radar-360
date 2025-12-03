@@ -38,15 +38,22 @@ if search_btn and artist_name:
     st.divider()
 
     try:
-        # --- CORRECTION 1 : ON AJOUTE market='FR' ---
-        # Ça force Spotify à chercher l'artiste populaire en France
-        results = sp.search(q=artist_name, type='artist', limit=1, market='FR')
+        # --- CORRECTION MAJEURE : RECHERCHE INTELLIGENTE ---
+        # 1. On demande les 5 premiers résultats (pas juste 1)
+        results = sp.search(q=artist_name, type='artist', limit=5, market='FR')
         
         if not results['artists']['items']:
             st.warning("Artiste introuvable.")
             st.stop()
 
-        artist = results['artists']['items'][0]
+        # 2. TRI PAR POPULARITÉ (Le fix est ici !)
+        # On trie la liste pour prendre l'artiste qui a le plus gros score de popularité
+        # Ça évite de tomber sur une "Angèle" inconnue qui a 0 followers
+        items = results['artists']['items']
+        items.sort(key=lambda x: x['popularity'], reverse=True)
+        artist = items[0] # On prend le gagnant (la Star)
+
+        # Extraction des données
         artist_id = artist['id']
         name = artist['name']
         popularity = artist['popularity']
@@ -60,8 +67,9 @@ if search_btn and artist_name:
             if image_url: st.image(image_url, width=150)
         with head_c2:
             st.subheader(name)
-            # On affiche l'ID pour vérifier qu'on a la bonne Angèle
-            st.caption(f"Spotify ID: {artist_id}") 
+            # On affiche les genres pour confirmer que c'est la bonne personne
+            if artist['genres']:
+                st.caption(f"Genres : {', '.join(artist['genres'][:3])}")
             st.markdown(f"[Ouvrir sur Spotify]({spotify_url})")
             
     except Exception as e:
@@ -85,7 +93,6 @@ if search_btn and artist_name:
         # --- LABEL ---
         st.caption("Structure")
         try:
-            # On cherche aussi sur le marché FR pour être cohérent
             albums = sp.artist_albums(artist_id, album_type='album,single', limit=1, country='FR')
             if albums['items']:
                 last_release = albums['items'][0]
@@ -95,11 +102,11 @@ if search_btn and artist_name:
             else:
                 st.warning("Aucune sortie trouvée.")
         except Exception as e:
-            st.warning(f"Infos Label indisponibles : {e}")
+            st.warning(f"Infos Label indisponibles.")
 
         st.write("---")
 
-        # --- CORRECTION 2 : DEBUGGAGE VOISINS ---
+        # --- ÉCOSYSTÈME ---
         st.caption("Écosystème")
         try:
             related = sp.artist_related_artists(artist_id)
@@ -107,16 +114,13 @@ if search_btn and artist_name:
             if related['artists']:
                 names = [a['name'] for a in related['artists'][:5]]
                 st.write("Similaire à :")
-                # On met des puces pour que ce soit lisible
                 for n in names:
                     st.write(f"• {n}")
             else:
-                # Si la liste est vide mais sans erreur technique
-                st.warning("Spotify ne renvoie aucun artiste similaire (Liste vide).")
+                st.warning("Pas assez de données pour l'écosystème.")
                 
         except Exception as e:
-            # ICI on affiche l'erreur technique exacte en rouge
-            st.error(f"BUG TECHNIQUE : {e}")
+            st.warning("Données 'Artistes Similaires' non accessibles pour cet ID.")
 
     # Colonnes vides
     with col_vide1: st.info("Colonne Audio (Semaine 2)")
