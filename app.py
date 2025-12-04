@@ -43,7 +43,7 @@ def get_lastfm_tags(artist_name):
     try:
         url = f"http://ws.audioscrobbler.com/2.0/?method=artist.gettoptags&artist={artist_name}&api_key={lastfm_key}&format=json"
         response = requests.get(url).json()
-        ignore = ['seen live', 'under 2000 listeners', 'french', 'belgian', 'hip-hop', 'rap', 'trap']
+        ignore = ['seen live', 'under 2000 listeners', 'french', 'belgian', 'hip-hop', 'rap', 'trap', 'pop']
         tags = response['toptags']['tag']
         clean_tags = [t['name'] for t in tags if t['name'].lower() not in ignore]
         return clean_tags[:5]
@@ -86,26 +86,26 @@ def analyze_signal(preview_url):
     return tempo, avg_energy, spec_cent, dynamic_range, y
 
 def get_smart_lyrics(artist_name, song_title):
-    """NOUVELLE FONCTION PLUS PUISSANTE"""
+    """VERSION FORCE BRUTE : On cherche, on prend le premier ID, on télécharge."""
     try:
         genius = lyricsgenius.Genius(genius_token, verbose=False, remove_section_headers=True)
         
-        # STRATÉGIE 1 : Recherche "Google Style" (Artiste + Titre dans la même phrase)
-        # C'est souvent plus efficace que de séparer les champs
-        query = f"{artist_name} {song_title}"
-        song = genius.search_song(query) 
-        
-        if song: 
-            return song
-
-        # STRATÉGIE 2 : Nettoyage du titre (Enlever les Feat)
+        # 1. On nettoie le titre pour la recherche (on enlève les feat)
         clean_title = song_title.split('(')[0].split('-')[0].strip()
-        query_clean = f"{artist_name} {clean_title}"
-        song = genius.search_song(query_clean)
+        search_query = f"{artist_name} {clean_title}"
         
-        if song: 
+        # 2. On demande la liste des résultats (pas le song direct)
+        request = genius.search_songs(search_query)
+        
+        # 3. On prend le premier résultat de la liste, PEU IMPORTE LE NOM DE L'ARTISTE
+        if request and 'hits' in request and len(request['hits']) > 0:
+            best_hit = request['hits'][0]['result']
+            song_id = best_hit['id']
+            
+            # 4. On force le téléchargement via l'ID
+            song = genius.song(song_id)
             return song
-
+        
         return None
     except:
         return None
@@ -216,6 +216,7 @@ if st.session_state.search_done and query:
                 st.caption(f"**{preview_data['title']}**")
                 st.audio(preview_data['preview_url'])
                 
+                # NOTE : Dans une vraie app, on mettrait ça en cache pour ne pas recalculer
                 tempo, rms, cent, dynamic, y = analyze_signal(preview_data['preview_url'])
                 
                 # Correction BPM
@@ -258,7 +259,7 @@ if st.session_state.search_done and query:
             if preview:
                 target_title = preview['title']
                 
-                # RECHERCHE INTELLIGENTE
+                # RECHERCHE FORCE BRUTE
                 song = get_smart_lyrics(data['name'], target_title)
                 
                 if song:
@@ -270,12 +271,11 @@ if st.session_state.search_done and query:
                     elif sentiment < -0.05: st.error(f"Sombre ({sentiment:.2f})")
                     else: st.warning(f"Neutre ({sentiment:.2f})")
                     
-                    st.metric("Complexité Vocabulaire", f"{int(complexity*100)}%", help="Richesse des mots")
+                    st.metric("Complexité Vocabulaire", f"{int(complexity*100)}%")
                     
                     with st.expander("Voir un extrait"):
                         st.write(song.lyrics[:300] + "...")
                 else:
-                    st.warning(f"Paroles introuvables pour {target_title}.")
-                    st.caption("Même en mode 'recherche large', Genius ne renvoie rien. Le titre est peut-être trop récent ou orthographié différemment.")
+                    st.error(f"Échec total pour {target_title}.")
             else:
                 st.warning("Titre non défini.")
