@@ -15,7 +15,6 @@ from textblob import TextBlob
 # =========================================================
 st.set_page_config(page_title="Artist 360° Radar", page_icon="🎹", layout="wide")
 
-# --- MÉMOIRE ---
 if 'search_done' not in st.session_state:
     st.session_state.search_done = False
 if 'data' not in st.session_state:
@@ -86,28 +85,46 @@ def analyze_signal(preview_url):
     return tempo, avg_energy, spec_cent, dynamic_range, y
 
 def get_smart_lyrics(artist_name, song_title):
-    """VERSION FORCE BRUTE : On cherche, on prend le premier ID, on télécharge."""
+    """STRATÉGIE ENTONNOIR (3 Essais)"""
     try:
-        genius = lyricsgenius.Genius(genius_token, verbose=False, remove_section_headers=True)
+        # On augmente le timeout car Genius est parfois lent
+        genius = lyricsgenius.Genius(genius_token, verbose=False, timeout=15, retries=3)
         
-        # 1. On nettoie le titre pour la recherche (on enlève les feat)
         clean_title = song_title.split('(')[0].split('-')[0].strip()
-        search_query = f"{artist_name} {clean_title}"
         
-        # 2. On demande la liste des résultats (pas le song direct)
-        request = genius.search_songs(search_query)
-        
-        # 3. On prend le premier résultat de la liste, PEU IMPORTE LE NOM DE L'ARTISTE
+        # ESSAI 1 : Recherche Exacte (Artiste + Titre)
+        # st.write(f"🕵️ Essai 1 : {artist_name} {clean_title}") # Debug
+        song = genius.search_song(clean_title, artist_name)
+        if song: return song
+
+        # ESSAI 2 : Recherche Combinée "Google Style"
+        # st.write(f"🕵️ Essai 2 : Query combinée") # Debug
+        query = f"{artist_name} {clean_title}"
+        request = genius.search_songs(query)
         if request and 'hits' in request and len(request['hits']) > 0:
-            best_hit = request['hits'][0]['result']
-            song_id = best_hit['id']
+            return genius.song(request['hits'][0]['result']['id'])
+
+        # ESSAI 3 : TITRE SEUL (La méthode bourrine)
+        # Si le titre est unique (ex: "Balance ton quoi"), ça marchera à coup sûr
+        # st.write(f"🕵️ Essai 3 : Titre seul '{clean_title}'") # Debug
+        request_title = genius.search_songs(clean_title)
+        if request_title and 'hits' in request_title and len(request_title['hits']) > 0:
+            # On vérifie quand même vaguement si l'artiste correspond un peu
+            # pour ne pas prendre une reprise
+            top_hit = request_title['hits'][0]['result']
+            hit_artist = top_hit['primary_artist']['name'].lower()
             
-            # 4. On force le téléchargement via l'ID
-            song = genius.song(song_id)
-            return song
-        
+            # Si le nom de l'artiste cherché est dans le résultat Genius (même partiellement)
+            # Ex: "angèle" est dans "angèle vl" -> OK
+            if artist_name.lower() in hit_artist or hit_artist in artist_name.lower():
+                return genius.song(top_hit['id'])
+            
+            # Si vraiment on est désespéré, on renvoie le top hit quand même
+            return genius.song(top_hit['id'])
+
         return None
-    except:
+    except Exception as e:
+        print(f"Erreur Genius: {e}")
         return None
 
 def analyze_lyrics_content(lyrics_text):
@@ -184,9 +201,7 @@ if st.session_state.search_done and query:
     st.divider()
     col_market, col_audio, col_semantic = st.columns(3)
 
-    # -----------------------------------------------------
-    # COLONNE 1 : MARCHÉ
-    # -----------------------------------------------------
+    # COLONNE 1
     with col_market:
         st.markdown("### 🟢 Marché & Business")
         c1, c2 = st.columns(2)
@@ -201,25 +216,18 @@ if st.session_state.search_done and query:
                 st.write(f"🏢 **Label :** {label_txt}")
         except: pass
 
-    # -----------------------------------------------------
-    # COLONNE 2 : AUDIO
-    # -----------------------------------------------------
+    # COLONNE 2
     with col_audio:
         st.markdown("### 🟡 Physique du Signal")
-        
         if st.button("🔊 Analyser l'Audio") or st.session_state.audio_analysis_done:
             st.session_state.audio_analysis_done = True 
-            
             preview_data = get_itunes_preview(data['name'])
             if preview_data:
                 st.image(preview_data['cover'], width=80)
                 st.caption(f"**{preview_data['title']}**")
                 st.audio(preview_data['preview_url'])
-                
-                # NOTE : Dans une vraie app, on mettrait ça en cache pour ne pas recalculer
                 tempo, rms, cent, dynamic, y = analyze_signal(preview_data['preview_url'])
                 
-                # Correction BPM
                 artist_genres = " ".join(data['genres']).lower()
                 halftime_genres = ['trap', 'hip hop', 'rap', 'drill']
                 bpm_final = int(tempo)
@@ -229,7 +237,6 @@ if st.session_state.search_done and query:
                 k1, k2 = st.columns(2)
                 k1.metric("Tempo", f"{bpm_final} BPM")
                 k2.metric("Brillance", f"{int(cent)} Hz")
-                
                 st.write("---")
                 df_wave = pd.DataFrame({'Amplitude': y[::50]})
                 fig = px.line(df_wave, y="Amplitude", height=100)
@@ -239,27 +246,22 @@ if st.session_state.search_done and query:
             else:
                 st.warning("Pas d'extrait iTunes.")
 
-    # -----------------------------------------------------
-    # COLONNE 3 : SÉMANTIQUE
-    # -----------------------------------------------------
+    # COLONNE 3
     with col_semantic:
         st.markdown("### 🔴 Sémantique")
-        
         tags = get_lastfm_tags(data['name'])
         if tags:
-            st.caption("Perception Public (Last.fm):")
+            st.caption("Perception (Last.fm):")
             st.markdown(" ".join([f"`{t}`" for t in tags]))
-        
         st.write("---")
         
         if st.button("🧠 Analyser les Textes") or st.session_state.nlp_analysis_done:
             st.session_state.nlp_analysis_done = True 
-            
             preview = get_itunes_preview(data['name'])
             if preview:
                 target_title = preview['title']
                 
-                # RECHERCHE FORCE BRUTE
+                # C'est ici que la nouvelle fonction travaille
                 song = get_smart_lyrics(data['name'], target_title)
                 
                 if song:
@@ -272,10 +274,10 @@ if st.session_state.search_done and query:
                     else: st.warning(f"Neutre ({sentiment:.2f})")
                     
                     st.metric("Complexité Vocabulaire", f"{int(complexity*100)}%")
-                    
                     with st.expander("Voir un extrait"):
                         st.write(song.lyrics[:300] + "...")
                 else:
                     st.error(f"Échec total pour {target_title}.")
+                    st.info(f"Le titre '{target_title}' n'a pas été trouvé sur Genius.")
             else:
                 st.warning("Titre non défini.")
