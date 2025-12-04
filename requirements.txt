@@ -2,3 +2,8 @@ streamlit
 spotipy
 pandas
 plotly
+requests
+librosa
+numpy
+lyricsgenius
+textblob
