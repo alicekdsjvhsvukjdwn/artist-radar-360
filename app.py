@@ -15,13 +15,11 @@ from textblob import TextBlob
 # =========================================================
 st.set_page_config(page_title="Artist 360° Radar", page_icon="🎹", layout="wide")
 
-# --- MÉMOIRE (SESSION STATE) ---
-# On initialise tout ce dont on a besoin pour que la page ne "saute" pas
+# --- MÉMOIRE ---
 if 'search_done' not in st.session_state:
     st.session_state.search_done = False
 if 'data' not in st.session_state:
     st.session_state.data = None
-# NOUVEAU : On garde en mémoire si les analyses sont faites
 if 'audio_analysis_done' not in st.session_state:
     st.session_state.audio_analysis_done = False
 if 'nlp_analysis_done' not in st.session_state:
@@ -45,7 +43,7 @@ def get_lastfm_tags(artist_name):
     try:
         url = f"http://ws.audioscrobbler.com/2.0/?method=artist.gettoptags&artist={artist_name}&api_key={lastfm_key}&format=json"
         response = requests.get(url).json()
-        ignore = ['seen live', 'under 2000 listeners', 'french', 'belgian', 'hip-hop', 'rap']
+        ignore = ['seen live', 'under 2000 listeners', 'french', 'belgian', 'hip-hop', 'rap', 'trap']
         tags = response['toptags']['tag']
         clean_tags = [t['name'] for t in tags if t['name'].lower() not in ignore]
         return clean_tags[:5]
@@ -88,32 +86,31 @@ def analyze_signal(preview_url):
     return tempo, avg_energy, spec_cent, dynamic_range, y
 
 def get_smart_lyrics(artist_name, song_title):
-    """Cherche les paroles de manière intelligente (Nettoyage du titre)"""
+    """NOUVELLE FONCTION PLUS PUISSANTE"""
     try:
         genius = lyricsgenius.Genius(genius_token, verbose=False, remove_section_headers=True)
         
-        # 1. Essai Exact
-        song = genius.search_song(song_title, artist_name)
-        if song: return song
-
-        # 2. Essai Nettoyé (On enlève ce qu'il y a après les parenthèses ou tirets)
-        # Ex: "NUEVAYoL (Feat. X)" devient "NUEVAYoL"
-        clean_title = song_title.split('(')[0].split('-')[0].strip()
-        song = genius.search_song(clean_title, artist_name)
-        if song: return song
+        # STRATÉGIE 1 : Recherche "Google Style" (Artiste + Titre dans la même phrase)
+        # C'est souvent plus efficace que de séparer les champs
+        query = f"{artist_name} {song_title}"
+        song = genius.search_song(query) 
         
-        # 3. Essai Désespéré : On cherche juste l'artiste et on prend son top hit
-        # (Utile si iTunes donne un titre bizarre)
-        artist_obj = genius.search_artist(artist_name, max_songs=1, sort="popularity")
-        if artist_obj and artist_obj.songs:
-            return artist_obj.songs[0]
+        if song: 
+            return song
+
+        # STRATÉGIE 2 : Nettoyage du titre (Enlever les Feat)
+        clean_title = song_title.split('(')[0].split('-')[0].strip()
+        query_clean = f"{artist_name} {clean_title}"
+        song = genius.search_song(query_clean)
+        
+        if song: 
+            return song
 
         return None
     except:
         return None
 
 def analyze_lyrics_content(lyrics_text):
-    """Analyse le texte brut"""
     blob = TextBlob(lyrics_text)
     sentiment = blob.sentiment.polarity
     words = lyrics_text.split()
@@ -135,7 +132,6 @@ with col_btn:
     search_btn = st.button("Lancer l'audit 🚀")
 
 if search_btn:
-    # RESET TOTAL QUAND ON LANCE UNE NOUVELLE RECHERCHE
     st.session_state.search_done = True
     st.session_state.audio_analysis_done = False
     st.session_state.nlp_analysis_done = False
@@ -144,7 +140,6 @@ if st.session_state.search_done and query:
     st.divider()
 
     try:
-        # LOGIQUE DE CHARGEMENT UNIQUE
         if st.session_state.data is None or st.session_state.data['query'] != query:
             if "open.spotify.com" in query:
                 artist_id = query.split("/artist/")[1].split("?")[0]
@@ -179,7 +174,7 @@ if st.session_state.search_done and query:
         with head_c2:
             st.subheader(data['name'])
             if data['genres']:
-                st.caption(f"Genres : {', '.join(data['genres'][:3])}")
+                st.caption(f"Genres détectés : {', '.join(data['genres'][:3])}")
             st.markdown(f"[Ouvrir sur Spotify]({data['url']})")
 
     except Exception as e:
@@ -212,12 +207,8 @@ if st.session_state.search_done and query:
     with col_audio:
         st.markdown("### 🟡 Physique du Signal")
         
-        # Logique de bouton PERSISTANT
         if st.button("🔊 Analyser l'Audio") or st.session_state.audio_analysis_done:
-            st.session_state.audio_analysis_done = True # On garde ouvert
-            
-            # On ne relance le calcul que si on ne l'a pas déjà fait pour économiser du temps
-            # (Pour simplifier ici, on relance, mais l'affichage reste)
+            st.session_state.audio_analysis_done = True 
             
             preview_data = get_itunes_preview(data['name'])
             if preview_data:
@@ -225,8 +216,6 @@ if st.session_state.search_done and query:
                 st.caption(f"**{preview_data['title']}**")
                 st.audio(preview_data['preview_url'])
                 
-                # Note: Dans une vraie app opti, on stockerait ça aussi dans session_state
-                # pour ne pas recalculer Librosa à chaque clic
                 tempo, rms, cent, dynamic, y = analyze_signal(preview_data['preview_url'])
                 
                 # Correction BPM
@@ -262,15 +251,14 @@ if st.session_state.search_done and query:
         
         st.write("---")
         
-        # Logique de bouton PERSISTANT
         if st.button("🧠 Analyser les Textes") or st.session_state.nlp_analysis_done:
-            st.session_state.nlp_analysis_done = True # On garde ouvert
+            st.session_state.nlp_analysis_done = True 
             
             preview = get_itunes_preview(data['name'])
             if preview:
                 target_title = preview['title']
                 
-                # On utilise la NOUVELLE fonction intelligente
+                # RECHERCHE INTELLIGENTE
                 song = get_smart_lyrics(data['name'], target_title)
                 
                 if song:
@@ -278,16 +266,16 @@ if st.session_state.search_done and query:
                     sentiment, complexity = analyze_lyrics_content(song.lyrics)
                     
                     st.subheader("Sentiment")
-                    if sentiment > 0.1: st.success(f"Positif (+{sentiment:.2f})")
-                    elif sentiment < -0.1: st.error(f"Sombre ({sentiment:.2f})")
+                    if sentiment > 0.05: st.success(f"Positif (+{sentiment:.2f})")
+                    elif sentiment < -0.05: st.error(f"Sombre ({sentiment:.2f})")
                     else: st.warning(f"Neutre ({sentiment:.2f})")
                     
-                    st.metric("Complexité Vocabulaire", f"{int(complexity*100)}%")
+                    st.metric("Complexité Vocabulaire", f"{int(complexity*100)}%", help="Richesse des mots")
                     
                     with st.expander("Voir un extrait"):
                         st.write(song.lyrics[:300] + "...")
                 else:
-                    st.warning(f"Paroles introuvables pour {target_title} (même après nettoyage).")
-                    st.info("Essaie de vérifier l'orthographe sur Genius.")
+                    st.warning(f"Paroles introuvables pour {target_title}.")
+                    st.caption("Même en mode 'recherche large', Genius ne renvoie rien. Le titre est peut-être trop récent ou orthographié différemment.")
             else:
-                st.warning("Impossible de définir un titre.")
+                st.warning("Titre non défini.")
