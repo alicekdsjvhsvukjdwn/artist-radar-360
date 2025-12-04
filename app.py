@@ -13,8 +13,7 @@ import plotly.express as px
 # =========================================================
 st.set_page_config(page_title="Artist 360° Radar", page_icon="🎹", layout="wide")
 
-# --- GESTION DE LA MÉMOIRE (NOUVEAU) ---
-# On initialise la mémoire si elle n'existe pas
+# --- MÉMOIRE ---
 if 'search_done' not in st.session_state:
     st.session_state.search_done = False
 if 'data' not in st.session_state:
@@ -71,6 +70,7 @@ def analyze_signal(preview_url):
     
     y, sr = librosa.load(filename, duration=30)
     
+    # Analyse
     tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
     rms = librosa.feature.rms(y=y)[0]
     avg_energy = np.mean(rms)
@@ -93,21 +93,17 @@ with col_btn:
     st.write("")
     search_btn = st.button("Lancer l'audit 🚀")
 
-# --- LOGIQUE DE MÉMOIRE ---
 if search_btn:
-    st.session_state.search_done = True # On se souvient qu'on a cliqué
+    st.session_state.search_done = True
 
-# Si la recherche est activée (soit mtn, soit avant), on affiche le contenu
 if st.session_state.search_done and query:
     
     st.divider()
 
-    # --- IDENTIFICATION (On ne le fait que si on change d'artiste ou au premier clic) ---
     try:
-        # On vérifie si on doit recharger les données (si c'est une nouvelle recherche)
+        # Rechargement des données si nouvelle recherche
         if st.session_state.data is None or st.session_state.data['query'] != query:
             
-            # ... C'EST ICI QU'ON FAIT LA RECHERCHE SPOTIFY ...
             if "open.spotify.com" in query:
                 artist_id = query.split("/artist/")[1].split("?")[0]
                 artist = sp.artist(artist_id)
@@ -122,18 +118,18 @@ if st.session_state.search_done and query:
                 candidates.sort(key=lambda x: x['popularity'], reverse=True)
                 artist = candidates[0]
             
-            # ON SAUVEGARDE TOUT DANS LA MÉMOIRE
+            # --- MISE EN MÉMOIRE (AVEC GENRES !) ---
             st.session_state.data = {
                 'query': query,
                 'id': artist['id'],
                 'name': artist['name'],
                 'pop': artist['popularity'],
                 'followers': artist['followers']['total'],
+                'genres': artist['genres'], # IMPORTANT : On garde les genres
                 'image': artist['images'][0]['url'] if artist['images'] else None,
                 'url': artist['external_urls']['spotify']
             }
 
-        # ON RECUPERE LES DONNÉES DEPUIS LA MÉMOIRE
         data = st.session_state.data
         
         # Header
@@ -142,6 +138,9 @@ if st.session_state.search_done and query:
             if data['image']: st.image(data['image'], width=150)
         with head_c2:
             st.subheader(data['name'])
+            # Affiche les genres pour info
+            if data['genres']:
+                st.caption(f"Genres détectés : {', '.join(data['genres'][:3])}")
             st.markdown(f"[Ouvrir sur Spotify]({data['url']})")
 
     except Exception as e:
@@ -161,29 +160,25 @@ if st.session_state.search_done and query:
         col_kpi2.metric("Followers", f"{data['followers']:,}")
         st.progress(data['pop'])
         st.write("---")
-        
-        # Label & Voisins (On les recharge à chaque fois, c'est rapide)
         try:
             albums = sp.artist_albums(data['id'], album_type='album,single', limit=5, country='FR')
             if albums['items']:
                 label_txt = sp.album(albums['items'][0]['id'])['label']
                 st.write(f"🏢 **Label :** {label_txt}")
         except: pass
-        
         st.caption("Écosystème (Last.fm)")
         sims = get_similar_artists_lastfm(data['name'])
         if sims: st.write(", ".join(sims))
 
     # -----------------------------------------------------
-    # COLONNE 2 : AUDIO
+    # COLONNE 2 : AUDIO (INTELLIGENCE CONTEXTUELLE)
     # -----------------------------------------------------
     with col_audio:
         st.markdown("### 🟡 Physique du Signal")
         
-        # Le bouton d'analyse
         if st.button("🔊 Analyser le Signal Audio"):
             
-            with st.spinner("Téléchargement & Calculs mathématiques..."):
+            with st.spinner("Analyse croisée Audio + Genres..."):
                 preview_data = get_itunes_preview(data['name'])
                 
                 if preview_data:
@@ -193,12 +188,46 @@ if st.session_state.search_done and query:
                     
                     tempo, rms, cent, dynamic, y = analyze_signal(preview_data['preview_url'])
                     
+                    # --- CORRECTION BPM INTELLIGENTE ---
+                    # On convertit les genres en une seule chaine minuscule pour chercher dedans
+                    artist_genres = " ".join(data['genres']).lower()
+                    
+                    # Liste des genres "Lents" qui sont souvent détectés en double
+                    halftime_genres = ['trap', 'hip hop', 'rap', 'drill', 'r&b', 'lo-fi', 'urban']
+                    
+                    # Liste des genres "Rapides" (qu'on ne touche surtout pas)
+                    fast_genres = ['drum and bass', 'dnb', 'jungle', 'techno', 'house', 'trance', 'punk', 'metal', 'footwork']
+                    
+                    bpm_machine = int(tempo)
+                    bpm_final = bpm_machine
+                    correction_msg = ""
+                    
+                    if bpm_machine > 130:
+                        # Est-ce que c'est du Rap/Trap ?
+                        is_halftime = any(g in artist_genres for g in halftime_genres)
+                        # Est-ce que c'est explicitement du rapide ?
+                        is_fast = any(g in artist_genres for g in fast_genres)
+                        
+                        if is_halftime and not is_fast:
+                            # C'est de la Trap détectée rapide -> On divise
+                            bpm_final = int(bpm_machine / 2)
+                            correction_msg = f"💡 Correction Cognitive : Le signal indique {bpm_machine} BPM, mais le genre ({', '.join([g for g in halftime_genres if g in artist_genres])}) suggère un ressenti 'Half-Time' à {bpm_final} BPM."
+                        elif is_fast:
+                            # C'est de la DnB -> On garde le rapide
+                            bpm_final = bpm_machine
+                            correction_msg = "✅ Tempo Rapide confirmé par le genre."
+                        else:
+                            # C'est de la Pop ou autre -> On affiche le doute
+                            correction_msg = f"ℹ️ Tempo ambigu : Techniquement {bpm_machine} BPM. Ressenti variable selon la danse."
+
+                    # Affichage
                     k1, k2 = st.columns(2)
-                    k1.metric("Tempo", f"{int(tempo)} BPM")
+                    k1.metric("Tempo (Ressenti)", f"{bpm_final} BPM")
                     k2.metric("Brillance", f"{int(cent)} Hz")
                     
                     st.write("---")
                     
+                    # Waveform
                     st.markdown("**Visualisation & Dynamique**")
                     df_wave = pd.DataFrame({'Amplitude': y[::50]})
                     fig = px.line(df_wave, y="Amplitude", height=150)
@@ -207,18 +236,19 @@ if st.session_state.search_done and query:
                     st.plotly_chart(fig, use_container_width=True)
                     
                     if dynamic < 0.05:
-                        st.error("🧱 **Effet 'Mur de Son' (Brique)**")
+                        st.error("🧱 **Mur de Son (Compressé)**")
                     else:
-                        st.success("🌊 **Effet 'Dynamique' (Aéré)**")
+                        st.success("🌊 **Dynamique (Aéré)**")
+                        
+                    # Affichage du message d'intelligence
+                    if correction_msg:
+                        st.info(correction_msg)
                     
                 else:
                     st.warning("Pas d'extrait iTunes trouvé.")
         else:
             st.info("Cliquez pour lancer l'analyse (30s de calcul)")
 
-    # -----------------------------------------------------
-    # COLONNE 3 : SÉMANTIQUE
-    # -----------------------------------------------------
     with col_semantic:
         st.markdown("### 🔴 Image & Perception")
         st.info("Module Genius à venir...")
