@@ -11,7 +11,7 @@ import lyricsgenius
 from textblob import TextBlob
 
 # =========================================================
-# 1. CONFIGURATION
+# 1. CONFIGURATION & CLÉS
 # =========================================================
 st.set_page_config(page_title="Artist 360° Radar", page_icon="🎹", layout="wide")
 
@@ -32,12 +32,19 @@ try:
     lastfm_key = st.secrets["LASTFM_API_KEY"]
     genius_token = st.secrets["GENIUS_ACCESS_TOKEN"]
 except Exception as e:
-    st.error(f"⚠️ Erreur Clés API : {e}")
+    st.error(f"⚠️ Erreur de clés API : {e}")
     st.stop()
 
 # =========================================================
 # 2. FONCTIONS
 # =========================================================
+
+# Petite classe pour emballer les résultats proprement (FIX DU BUG)
+class SongResult:
+    def __init__(self, title, lyrics):
+        self.title = title
+        self.lyrics = lyrics
+
 def get_lastfm_tags(artist_name):
     try:
         url = f"http://ws.audioscrobbler.com/2.0/?method=artist.gettoptags&artist={artist_name}&api_key={lastfm_key}&format=json"
@@ -84,36 +91,33 @@ def analyze_signal(preview_url):
     return tempo, avg_energy, spec_cent, dynamic_range, y
 
 def get_smart_lyrics(artist_name, song_title):
-    """VERSION MANUELLE AVEC DEBUG"""
+    """VERSION CORRIGÉE : Récupère les paroles (string) et renvoie un objet SongResult"""
     try:
         genius = lyricsgenius.Genius(genius_token, verbose=False, remove_section_headers=True)
         
+        # 1. Nettoyage et Recherche Large
         clean_title = song_title.split('(')[0].split('-')[0].strip()
         search_query = f"{artist_name} {clean_title}"
         
-        st.caption(f"🕵️ Recherche Genius envoyée : '{search_query}'")
-        
-        # On demande la liste brute (JSON) sans filtre
+        # 2. Recherche dans la liste des hits
         response = genius.search_songs(search_query)
         
         if response and 'hits' in response and len(response['hits']) > 0:
-            # On regarde le Top 1
             top_hit = response['hits'][0]['result']
             found_title = top_hit['title']
-            found_artist = top_hit['primary_artist']['name']
             song_id = top_hit['id']
             
-            st.caption(f"✅ Genius a trouvé : **'{found_title}'** par **'{found_artist}'** (ID: {song_id})")
+            # 3. SCRAPING DES PAROLES VIA L'ID (C'est la ligne magique qui manquait)
+            # Cette fonction renvoie directement le texte (string)
+            lyrics_text = genius.lyrics(song_id=song_id)
             
-            # ON FORCE LE TÉLÉCHARGEMENT VIA L'ID (On s'en fiche si le nom ne matche pas parfaitement)
-            song = genius.song(song_id)
-            return song
-        else:
-            st.warning(f"❌ Genius répond : 0 résultats pour '{search_query}'")
-            return None
-            
+            if lyrics_text:
+                # On emballe ça dans notre objet maison pour que le reste du code marche
+                return SongResult(found_title, lyrics_text)
+        
+        return None
     except Exception as e:
-        st.error(f"Erreur Technique Genius : {e}")
+        print(f"Erreur Genius: {e}")
         return None
 
 def analyze_lyrics_content(lyrics_text):
@@ -180,7 +184,7 @@ if st.session_state.search_done and query:
         with head_c2:
             st.subheader(data['name'])
             if data['genres']:
-                st.caption(f"Genres : {', '.join(data['genres'][:3])}")
+                st.caption(f"Genres détectés : {', '.join(data['genres'][:3])}")
             st.markdown(f"[Ouvrir sur Spotify]({data['url']})")
 
     except Exception as e:
@@ -218,8 +222,9 @@ if st.session_state.search_done and query:
                 tempo, rms, cent, dynamic, y = analyze_signal(preview_data['preview_url'])
                 
                 artist_genres = " ".join(data['genres']).lower()
+                halftime_genres = ['trap', 'hip hop', 'rap', 'drill']
                 bpm_final = int(tempo)
-                if bpm_final > 130 and any(g in artist_genres for g in ['trap', 'rap', 'hip hop']):
+                if bpm_final > 130 and any(g in artist_genres for g in halftime_genres):
                     bpm_final = int(bpm_final / 2)
 
                 k1, k2 = st.columns(2)
@@ -247,12 +252,10 @@ if st.session_state.search_done and query:
             preview = get_itunes_preview(data['name'])
             if preview:
                 target_title = preview['title']
-                
-                # APPEL DE LA FONCTION DEBUG
                 song = get_smart_lyrics(data['name'], target_title)
                 
                 if song:
-                    st.success("Paroles récupérées !")
+                    st.write(f"Analyse de : **{song.title}**")
                     sentiment, complexity = analyze_lyrics_content(song.lyrics)
                     
                     st.subheader("Sentiment")
@@ -260,10 +263,10 @@ if st.session_state.search_done and query:
                     elif sentiment < -0.05: st.error(f"Sombre ({sentiment:.2f})")
                     else: st.warning(f"Neutre ({sentiment:.2f})")
                     
-                    st.metric("Complexité Vocabulaire", f"{int(complexity*100)}%")
+                    st.metric("Richesse Vocabulaire", f"{int(complexity*100)}%")
                     with st.expander("Voir un extrait"):
                         st.write(song.lyrics[:300] + "...")
                 else:
-                    st.error(f"Échec Genius pour {target_title}.")
+                    st.warning(f"Paroles introuvables pour {target_title}.")
             else:
                 st.warning("Titre non défini.")
