@@ -9,7 +9,8 @@ import os
 import plotly.express as px
 import lyricsgenius
 from textblob import TextBlob
-import traceback # Pour voir les détails précis des erreurs
+from bs4 import BeautifulSoup # NOUVEL OUTIL DE SCRAPING
+import re # Pour nettoyer le texte
 
 # =========================================================
 # 1. CONFIGURATION & CLÉS
@@ -45,6 +46,64 @@ class SongResult:
         self.title = title
         self.lyrics = lyrics
 
+def scrape_genius_manually(url):
+    """Fonction de secours qui va lire le HTML directement"""
+    try:
+        page = requests.get(url)
+        html = BeautifulSoup(page.text, 'html.parser')
+        
+        # Genius cache les paroles dans des divs avec un attribut 'data-lyrics-container'
+        lyrics_divs = html.find_all("div", attrs={"data-lyrics-container": "true"})
+        
+        if lyrics_divs:
+            lyrics = ""
+            for div in lyrics_divs:
+                # On remplace les <br> par des sauts de ligne
+                lyrics += div.get_text(separator="\n")
+            
+            # Petit nettoyage (enlève les trucs entre crochets comme [Refrain])
+            lyrics = re.sub(r'\[.*?\]', '', lyrics)
+            # Enlève les lignes vides multiples
+            lyrics = re.sub(r'\n\s*\n', '\n', lyrics)
+            return lyrics.strip()
+        else:
+            return None
+    except Exception as e:
+        return None
+
+def get_smart_lyrics(artist_name, song_title):
+    try:
+        genius = lyricsgenius.Genius(genius_token, verbose=False)
+        
+        clean_title = song_title.split('(')[0].split('-')[0].strip()
+        search_query = f"{artist_name} {clean_title}"
+        
+        # 1. On cherche l'URL de la chanson via l'API (ça, ça marche)
+        response = genius.search_songs(search_query)
+        
+        if response and 'hits' in response and len(response['hits']) > 0:
+            top_hit = response['hits'][0]['result']
+            found_title = top_hit['title']
+            song_url = top_hit['url'] # On récupère l'URL de la page Genius
+            
+            # 2. On utilise notre Scraper Manuel sur cette URL
+            lyrics_text = scrape_genius_manually(song_url)
+            
+            if lyrics_text:
+                return SongResult(found_title, lyrics_text)
+            else:
+                # Si le manuel échoue, on tente la méthode classique (au cas où)
+                try:
+                    song = genius.song(top_hit['id'])
+                    return SongResult(found_title, song.lyrics)
+                except:
+                    return None
+        return None
+
+    except Exception as e:
+        return None
+
+# (Les autres fonctions restent identiques)
 def get_lastfm_tags(artist_name):
     try:
         url = f"http://ws.audioscrobbler.com/2.0/?method=artist.gettoptags&artist={artist_name}&api_key={lastfm_key}&format=json"
@@ -90,61 +149,6 @@ def analyze_signal(preview_url):
     dynamic_range = np.max(rms) - np.mean(rms)
     os.remove(filename)
     return tempo, avg_energy, spec_cent, dynamic_range, y
-
-def get_smart_lyrics(artist_name, song_title):
-    """VERSION DEBUG : AFFICHE TOUT CE QUI SE PASSE"""
-    st.warning("🔵 DÉBUT DU DEBUG GENIUS")
-    
-    try:
-        genius = lyricsgenius.Genius(genius_token, verbose=True, remove_section_headers=True, timeout=15)
-        
-        # 1. Nettoyage
-        clean_title = song_title.split('(')[0].split('-')[0].strip()
-        search_query = f"{artist_name} {clean_title}"
-        st.info(f"🔎 1. Requête envoyée à Genius : '{search_query}'")
-        
-        # 2. Recherche brute
-        response = genius.search_songs(search_query)
-        
-        if not response or 'hits' not in response:
-            st.error("❌ 2. Réponse de l'API vide ou sans 'hits'.")
-            return None
-        
-        hits_count = len(response['hits'])
-        st.info(f"🔎 2. Nombre de résultats trouvés : {hits_count}")
-        
-        if hits_count > 0:
-            top_hit = response['hits'][0]['result']
-            found_title = top_hit['title']
-            found_artist = top_hit['primary_artist']['name']
-            song_id = top_hit['id']
-            
-            st.success(f"✅ 3. Top Résultat trouvé : '{found_title}' par '{found_artist}' (ID: {song_id})")
-            
-            # 3. Tentative de téléchargement
-            st.info("⏳ 4. Tentative de téléchargement du texte (Scraping)...")
-            try:
-                # C'est souvent ICI que ça plante (Timeout ou erreur de parsing)
-                lyrics_text = genius.lyrics(song_id=song_id)
-                
-                if lyrics_text:
-                    st.success("🎉 5. Texte téléchargé avec succès !")
-                    return SongResult(found_title, lyrics_text)
-                else:
-                    st.error("❌ 5. Le téléchargement a réussi mais le texte est vide (None).")
-            except Exception as e:
-                st.error(f"❌ 5. CRASH lors du téléchargement : {e}")
-                # Affiche le détail technique
-                st.code(traceback.format_exc())
-        else:
-            st.warning("⚠️ 3. Aucun résultat (Hits = 0). Genius ne connait pas ce titre.")
-        
-        return None
-
-    except Exception as e:
-        st.error(f"❌ ERREUR GLOBALE GENIUS : {e}")
-        st.code(traceback.format_exc())
-        return None
 
 def analyze_lyrics_content(lyrics_text):
     blob = TextBlob(lyrics_text)
@@ -247,9 +251,8 @@ if st.session_state.search_done and query:
                 st.audio(preview_data['preview_url'])
                 tempo, rms, cent, dynamic, y = analyze_signal(preview_data['preview_url'])
                 artist_genres = " ".join(data['genres']).lower()
-                halftime_genres = ['trap', 'hip hop', 'rap', 'drill']
                 bpm_final = int(tempo)
-                if bpm_final > 130 and any(g in artist_genres for g in halftime_genres):
+                if bpm_final > 130 and any(g in artist_genres for g in ['trap', 'rap', 'hip hop']):
                     bpm_final = int(bpm_final / 2)
                 k1, k2 = st.columns(2)
                 k1.metric("Tempo", f"{bpm_final} BPM")
@@ -276,20 +279,23 @@ if st.session_state.search_done and query:
             if preview:
                 target_title = preview['title']
                 
-                # --- APPEL DEBUG ---
-                song = get_smart_lyrics(data['name'], target_title)
+                # RECHERCHE AVEC SCRAPER MANUEL
+                with st.spinner("Téléchargement des paroles (Scraping)..."):
+                    song = get_smart_lyrics(data['name'], target_title)
                 
                 if song:
                     st.write(f"Analyse de : **{song.title}**")
                     sentiment, complexity = analyze_lyrics_content(song.lyrics)
+                    
                     st.subheader("Sentiment")
                     if sentiment > 0.05: st.success(f"Positif (+{sentiment:.2f})")
                     elif sentiment < -0.05: st.error(f"Sombre ({sentiment:.2f})")
                     else: st.warning(f"Neutre ({sentiment:.2f})")
+                    
                     st.metric("Complexité Vocabulaire", f"{int(complexity*100)}%")
                     with st.expander("Voir un extrait"):
                         st.write(song.lyrics[:300] + "...")
                 else:
-                    st.error(f"Échec total.")
+                    st.error(f"Paroles introuvables pour {target_title}.")
             else:
                 st.warning("Titre non défini.")
