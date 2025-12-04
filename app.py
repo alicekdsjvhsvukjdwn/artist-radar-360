@@ -6,12 +6,19 @@ import requests
 import librosa
 import numpy as np
 import os
-import plotly.express as px # On utilise Plotly pour une belle onde
+import plotly.express as px
 
 # =========================================================
 # 1. CONFIGURATION & CLÉS
 # =========================================================
 st.set_page_config(page_title="Artist 360° Radar", page_icon="🎹", layout="wide")
+
+# --- GESTION DE LA MÉMOIRE (NOUVEAU) ---
+# On initialise la mémoire si elle n'existe pas
+if 'search_done' not in st.session_state:
+    st.session_state.search_done = False
+if 'data' not in st.session_state:
+    st.session_state.data = None
 
 try:
     client_id = st.secrets["SPOTIPY_CLIENT_ID"]
@@ -64,14 +71,10 @@ def analyze_signal(preview_url):
     
     y, sr = librosa.load(filename, duration=30)
     
-    # Calculs Physiques
     tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
     rms = librosa.feature.rms(y=y)[0]
     avg_energy = np.mean(rms)
     spec_cent = np.mean(librosa.feature.spectral_centroid(y=y, sr=sr))
-    
-    # Calcul de la Dynamique (Nouveau !)
-    # Différence entre le son max et le son moyen
     dynamic_range = np.max(rms) - np.mean(rms)
     
     os.remove(filename)
@@ -90,38 +93,56 @@ with col_btn:
     st.write("")
     search_btn = st.button("Lancer l'audit 🚀")
 
-if search_btn and query:
+# --- LOGIQUE DE MÉMOIRE ---
+if search_btn:
+    st.session_state.search_done = True # On se souvient qu'on a cliqué
+
+# Si la recherche est activée (soit mtn, soit avant), on affiche le contenu
+if st.session_state.search_done and query:
+    
     st.divider()
 
-    # --- IDENTIFICATION ---
+    # --- IDENTIFICATION (On ne le fait que si on change d'artiste ou au premier clic) ---
     try:
-        if "open.spotify.com" in query:
-            artist_id = query.split("/artist/")[1].split("?")[0]
-            artist = sp.artist(artist_id)
-        else:
-            results = sp.search(q=query, type='artist', limit=10, market='FR')
-            if not results['artists']['items']:
-                st.warning("Artiste introuvable.")
-                st.stop()
-            items = results['artists']['items']
-            candidates = [i for i in items if query.lower() in i['name'].lower()]
-            if not candidates: candidates = items
-            candidates.sort(key=lambda x: x['popularity'], reverse=True)
-            artist = candidates[0]
+        # On vérifie si on doit recharger les données (si c'est une nouvelle recherche)
+        if st.session_state.data is None or st.session_state.data['query'] != query:
+            
+            # ... C'EST ICI QU'ON FAIT LA RECHERCHE SPOTIFY ...
+            if "open.spotify.com" in query:
+                artist_id = query.split("/artist/")[1].split("?")[0]
+                artist = sp.artist(artist_id)
+            else:
+                results = sp.search(q=query, type='artist', limit=10, market='FR')
+                if not results['artists']['items']:
+                    st.warning("Artiste introuvable.")
+                    st.stop()
+                items = results['artists']['items']
+                candidates = [i for i in items if query.lower() in i['name'].lower()]
+                if not candidates: candidates = items
+                candidates.sort(key=lambda x: x['popularity'], reverse=True)
+                artist = candidates[0]
+            
+            # ON SAUVEGARDE TOUT DANS LA MÉMOIRE
+            st.session_state.data = {
+                'query': query,
+                'id': artist['id'],
+                'name': artist['name'],
+                'pop': artist['popularity'],
+                'followers': artist['followers']['total'],
+                'image': artist['images'][0]['url'] if artist['images'] else None,
+                'url': artist['external_urls']['spotify']
+            }
 
-        artist_id = artist['id']
-        name = artist['name']
-        popularity = artist['popularity']
-        followers = artist['followers']['total']
-        image_url = artist['images'][0]['url'] if artist['images'] else None
-        spotify_url = artist['external_urls']['spotify']
+        # ON RECUPERE LES DONNÉES DEPUIS LA MÉMOIRE
+        data = st.session_state.data
         
+        # Header
         head_c1, head_c2 = st.columns([1, 4])
         with head_c1:
-            if image_url: st.image(image_url, width=150)
+            if data['image']: st.image(data['image'], width=150)
         with head_c2:
-            st.subheader(name)
-            st.markdown(f"[Ouvrir sur Spotify]({spotify_url})")
+            st.subheader(data['name'])
+            st.markdown(f"[Ouvrir sur Spotify]({data['url']})")
 
     except Exception as e:
         st.error(f"Erreur Recherche : {e}")
@@ -136,64 +157,59 @@ if search_btn and query:
     with col_market:
         st.markdown("### 🟢 Marché & Business")
         col_kpi1, col_kpi2 = st.columns(2)
-        col_kpi1.metric("Popularité", f"{popularity}/100")
-        col_kpi2.metric("Followers", f"{followers:,}")
-        st.progress(popularity)
+        col_kpi1.metric("Popularité", f"{data['pop']}/100")
+        col_kpi2.metric("Followers", f"{data['followers']:,}")
+        st.progress(data['pop'])
         st.write("---")
+        
+        # Label & Voisins (On les recharge à chaque fois, c'est rapide)
         try:
-            albums = sp.artist_albums(artist_id, album_type='album,single', limit=5, country='FR')
+            albums = sp.artist_albums(data['id'], album_type='album,single', limit=5, country='FR')
             if albums['items']:
                 label_txt = sp.album(albums['items'][0]['id'])['label']
                 st.write(f"🏢 **Label :** {label_txt}")
         except: pass
+        
         st.caption("Écosystème (Last.fm)")
-        sims = get_similar_artists_lastfm(name)
+        sims = get_similar_artists_lastfm(data['name'])
         if sims: st.write(", ".join(sims))
 
     # -----------------------------------------------------
-    # COLONNE 2 : AUDIO (OPTIMISÉE)
+    # COLONNE 2 : AUDIO
     # -----------------------------------------------------
     with col_audio:
         st.markdown("### 🟡 Physique du Signal")
         
-        # Le bouton magique qui empêche le blocage
+        # Le bouton d'analyse
         if st.button("🔊 Analyser le Signal Audio"):
             
             with st.spinner("Téléchargement & Calculs mathématiques..."):
-                preview_data = get_itunes_preview(name)
+                preview_data = get_itunes_preview(data['name'])
                 
                 if preview_data:
                     st.image(preview_data['cover'], width=100)
                     st.caption(f"**{preview_data['title']}**")
                     st.audio(preview_data['preview_url'])
                     
-                    # Analyse
                     tempo, rms, cent, dynamic, y = analyze_signal(preview_data['preview_url'])
                     
-                    # KPIs
                     k1, k2 = st.columns(2)
                     k1.metric("Tempo", f"{int(tempo)} BPM")
                     k2.metric("Brillance", f"{int(cent)} Hz")
                     
                     st.write("---")
                     
-                    # INTERPRÉTATION DE L'ONDE (La plus-value)
                     st.markdown("**Visualisation & Dynamique**")
-                    
-                    # On utilise Plotly pour un beau graph
-                    # On réduit les points (1 sur 50) pour que ça soit léger
                     df_wave = pd.DataFrame({'Amplitude': y[::50]})
                     fig = px.line(df_wave, y="Amplitude", height=150)
                     fig.update_layout(xaxis_title=None, yaxis_title=None, showlegend=False, margin=dict(l=0, r=0, t=0, b=0))
-                    # Couleur Jaune "Spotify" ou "Radar"
                     fig.update_traces(line_color='#FFC300') 
                     st.plotly_chart(fig, use_container_width=True)
                     
-                    # Explication Cognitive
                     if dynamic < 0.05:
-                        st.error("🧱 **Effet 'Mur de Son' (Brique) :** Très compressé. Impact maximum, mais fatigue auditive rapide. Typique Pop/Radio.")
+                        st.error("🧱 **Effet 'Mur de Son' (Brique)**")
                     else:
-                        st.success("🌊 **Effet 'Dynamique' (Aéré) :** Variations naturelles de volume. Plus 'organique' et respirant.")
+                        st.success("🌊 **Effet 'Dynamique' (Aéré)**")
                     
                 else:
                     st.warning("Pas d'extrait iTunes trouvé.")
@@ -201,9 +217,8 @@ if search_btn and query:
             st.info("Cliquez pour lancer l'analyse (30s de calcul)")
 
     # -----------------------------------------------------
-    # COLONNE 3 : SÉMANTIQUE (Apparaît tout de suite mtn)
+    # COLONNE 3 : SÉMANTIQUE
     # -----------------------------------------------------
     with col_semantic:
         st.markdown("### 🔴 Image & Perception")
-        st.info("Le contenu s'affiche instantanément maintenant !")
-        st.write("Module Genius à venir...")
+        st.info("Module Genius à venir...")
