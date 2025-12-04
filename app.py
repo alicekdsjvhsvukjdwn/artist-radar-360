@@ -9,6 +9,7 @@ import os
 import plotly.express as px
 import lyricsgenius
 from textblob import TextBlob
+import traceback # Pour voir les détails précis des erreurs
 
 # =========================================================
 # 1. CONFIGURATION & CLÉS
@@ -39,7 +40,6 @@ except Exception as e:
 # 2. FONCTIONS
 # =========================================================
 
-# Petite classe pour emballer les résultats proprement (FIX DU BUG)
 class SongResult:
     def __init__(self, title, lyrics):
         self.title = title
@@ -51,7 +51,8 @@ def get_lastfm_tags(artist_name):
         response = requests.get(url).json()
         ignore = ['seen live', 'under 2000 listeners', 'french', 'belgian', 'hip-hop', 'rap', 'pop', 'trap']
         tags = response['toptags']['tag']
-        return [t['name'] for t in tags if t['name'].lower() not in ignore][:5]
+        clean_tags = [t['name'] for t in tags if t['name'].lower() not in ignore]
+        return clean_tags[:5]
     except:
         return []
 
@@ -91,33 +92,58 @@ def analyze_signal(preview_url):
     return tempo, avg_energy, spec_cent, dynamic_range, y
 
 def get_smart_lyrics(artist_name, song_title):
-    """VERSION CORRIGÉE : Récupère les paroles (string) et renvoie un objet SongResult"""
+    """VERSION DEBUG : AFFICHE TOUT CE QUI SE PASSE"""
+    st.warning("🔵 DÉBUT DU DEBUG GENIUS")
+    
     try:
-        genius = lyricsgenius.Genius(genius_token, verbose=False, remove_section_headers=True)
+        genius = lyricsgenius.Genius(genius_token, verbose=True, remove_section_headers=True, timeout=15)
         
-        # 1. Nettoyage et Recherche Large
+        # 1. Nettoyage
         clean_title = song_title.split('(')[0].split('-')[0].strip()
         search_query = f"{artist_name} {clean_title}"
+        st.info(f"🔎 1. Requête envoyée à Genius : '{search_query}'")
         
-        # 2. Recherche dans la liste des hits
+        # 2. Recherche brute
         response = genius.search_songs(search_query)
         
-        if response and 'hits' in response and len(response['hits']) > 0:
+        if not response or 'hits' not in response:
+            st.error("❌ 2. Réponse de l'API vide ou sans 'hits'.")
+            return None
+        
+        hits_count = len(response['hits'])
+        st.info(f"🔎 2. Nombre de résultats trouvés : {hits_count}")
+        
+        if hits_count > 0:
             top_hit = response['hits'][0]['result']
             found_title = top_hit['title']
+            found_artist = top_hit['primary_artist']['name']
             song_id = top_hit['id']
             
-            # 3. SCRAPING DES PAROLES VIA L'ID (C'est la ligne magique qui manquait)
-            # Cette fonction renvoie directement le texte (string)
-            lyrics_text = genius.lyrics(song_id=song_id)
+            st.success(f"✅ 3. Top Résultat trouvé : '{found_title}' par '{found_artist}' (ID: {song_id})")
             
-            if lyrics_text:
-                # On emballe ça dans notre objet maison pour que le reste du code marche
-                return SongResult(found_title, lyrics_text)
+            # 3. Tentative de téléchargement
+            st.info("⏳ 4. Tentative de téléchargement du texte (Scraping)...")
+            try:
+                # C'est souvent ICI que ça plante (Timeout ou erreur de parsing)
+                lyrics_text = genius.lyrics(song_id=song_id)
+                
+                if lyrics_text:
+                    st.success("🎉 5. Texte téléchargé avec succès !")
+                    return SongResult(found_title, lyrics_text)
+                else:
+                    st.error("❌ 5. Le téléchargement a réussi mais le texte est vide (None).")
+            except Exception as e:
+                st.error(f"❌ 5. CRASH lors du téléchargement : {e}")
+                # Affiche le détail technique
+                st.code(traceback.format_exc())
+        else:
+            st.warning("⚠️ 3. Aucun résultat (Hits = 0). Genius ne connait pas ce titre.")
         
         return None
+
     except Exception as e:
-        print(f"Erreur Genius: {e}")
+        st.error(f"❌ ERREUR GLOBALE GENIUS : {e}")
+        st.code(traceback.format_exc())
         return None
 
 def analyze_lyrics_content(lyrics_text):
@@ -220,13 +246,11 @@ if st.session_state.search_done and query:
                 st.caption(f"**{preview_data['title']}**")
                 st.audio(preview_data['preview_url'])
                 tempo, rms, cent, dynamic, y = analyze_signal(preview_data['preview_url'])
-                
                 artist_genres = " ".join(data['genres']).lower()
                 halftime_genres = ['trap', 'hip hop', 'rap', 'drill']
                 bpm_final = int(tempo)
                 if bpm_final > 130 and any(g in artist_genres for g in halftime_genres):
                     bpm_final = int(bpm_final / 2)
-
                 k1, k2 = st.columns(2)
                 k1.metric("Tempo", f"{bpm_final} BPM")
                 k2.metric("Brillance", f"{int(cent)} Hz")
@@ -248,25 +272,24 @@ if st.session_state.search_done and query:
         
         if st.button("🧠 Analyser les Textes") or st.session_state.nlp_analysis_done:
             st.session_state.nlp_analysis_done = True 
-            
             preview = get_itunes_preview(data['name'])
             if preview:
                 target_title = preview['title']
+                
+                # --- APPEL DEBUG ---
                 song = get_smart_lyrics(data['name'], target_title)
                 
                 if song:
                     st.write(f"Analyse de : **{song.title}**")
                     sentiment, complexity = analyze_lyrics_content(song.lyrics)
-                    
                     st.subheader("Sentiment")
                     if sentiment > 0.05: st.success(f"Positif (+{sentiment:.2f})")
                     elif sentiment < -0.05: st.error(f"Sombre ({sentiment:.2f})")
                     else: st.warning(f"Neutre ({sentiment:.2f})")
-                    
-                    st.metric("Richesse Vocabulaire", f"{int(complexity*100)}%")
+                    st.metric("Complexité Vocabulaire", f"{int(complexity*100)}%")
                     with st.expander("Voir un extrait"):
                         st.write(song.lyrics[:300] + "...")
                 else:
-                    st.warning(f"Paroles introuvables pour {target_title}.")
+                    st.error(f"Échec total.")
             else:
                 st.warning("Titre non défini.")
