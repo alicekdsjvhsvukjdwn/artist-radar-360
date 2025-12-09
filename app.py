@@ -200,9 +200,13 @@ else:
         # -------------------------------------------------
         st.subheader("🎚️ ADN sonore")
 
-        features = sp.audio_features([track["id"]])[0]
+        try:
+            af = sp.audio_features([track["id"]])
+            features = af[0] if af and af[0] else None
+        except Exception:
+            features = None
 
-        if features:
+        if features is not None:
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("BPM", int(features["tempo"]))
             c2.metric("Énergie", round(features["energy"], 2))
@@ -226,38 +230,10 @@ else:
                 line_close=True,
                 range_r=[0, 1]
             )
-            fig.update_layout(height=350)
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("Spotify ne fournit pas d’Audio Features pour ce titre.")
 
-        # -------------------------------------------------
-        # 2.2 — Analyse des paroles (NLP léger)
-        # -------------------------------------------------
-        st.subheader("📝 Texte & charge émotionnelle")
-
-        try:
-            song = genius.search_song(track["name"], data["name"])
-            if song and song.lyrics:
-                lyrics = re.sub(r"\[.*?\]", "", song.lyrics)
-
-                blob = TextBlob(lyrics)
-                polarity = blob.sentiment.polarity
-                subjectivity = blob.sentiment.subjectivity
-                vocab_size = len(set(blob.words))
-
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Polarité", round(polarity, 2))
-                c2.metric("Subjectivité", round(subjectivity, 2))
-                c3.metric("Richesse lexicale", vocab_size)
-
-                with st.expander("Voir un extrait de texte"):
-                    st.text("\n".join(lyrics.split("\n")[:12]))
-
-            else:
-                st.info("Paroles non disponibles sur Genius.")
-        except Exception:
-            st.warning("Erreur lors de l’analyse des paroles.")
 
         # -------------------------------------------------
         # 2.3 — Dissonance créative (son vs texte)
