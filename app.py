@@ -183,37 +183,51 @@ else:
     data = st.session_state.artist_data
 
     # -----------------------------------------------------
-    # 2.0 – Récupération des titres
+    # 2.0 – Récupération & filtrage des titres
     # -----------------------------------------------------
     try:
         top_resp = sp.artist_top_tracks(data["id"], country="FR")
-        tracks = top_resp.get("tracks", [])
+        tracks_raw = top_resp.get("tracks", [])
     except Exception:
-        tracks = []
+        tracks_raw = []
+
+    # Garder en priorité les titres où l'artiste courant est dans les artistes du track
+    tracks = [
+        t for t in tracks_raw
+        if any(a.get("id") == data["id"] for a in t.get("artists", []))
+    ]
+
+    # Si après filtrage y'a plus rien, on retombe sur la liste brute
+    if not tracks:
+        tracks = tracks_raw
 
     if not tracks:
         st.warning("Aucun titre exploitable trouvé pour cet artiste.")
     else:
-        # Label lisible pour le selectbox
-        options = {
-            f"{t['name']} – {t['album']['name']}": t
-            for t in tracks
-        }
-        selected_label = st.selectbox(
-            "Choisis un titre",
-            list(options.keys()),
-            key="labo_track_select"
-        )
-        track = options[selected_label]
+        # On utilise un selectbox sur des indices pour éviter les problèmes de labels/état
+        labels = [
+            f"{t['name']} – {t['album']['name']}" for t in tracks
+        ]
 
-        # Info rapide sur le titre
+        selected_index = st.selectbox(
+            "Choisis un titre",
+            options=list(range(len(tracks))),
+            format_func=lambda i: labels[i]
+        )
+
+        track = tracks[selected_index]
+
+        # -------------------------------------------------
+        # 2.1 — Carte d’identité rapide du titre
+        # -------------------------------------------------
         info_col1, info_col2 = st.columns([1, 3])
         with info_col1:
-            if track["album"]["images"]:
+            if track.get("album", {}).get("images"):
                 st.image(track["album"]["images"][0]["url"], width=120)
         with info_col2:
             st.markdown(f"**{track['name']}**")
             st.caption(track["album"]["name"])
+            # Affichage du player si un preview existe
             if track.get("preview_url"):
                 st.audio(track["preview_url"], format="audio/mp4")
 
@@ -222,17 +236,19 @@ else:
         text_polarity = None
 
         # -------------------------------------------------
-        # 2.1 — ADN sonore
+        # 2.2 — ADN sonore
         # -------------------------------------------------
         st.subheader("🧬 ADN sonore")
         features = None
+        audio_error = None
 
         # 1) Tentative avec Spotify Audio Features
         try:
             af_list = sp.audio_features([track["id"]])
             if af_list and af_list[0]:
                 features = af_list[0]
-        except Exception:
+        except Exception as e:
+            audio_error = str(e)
             features = None
 
         if features is not None:
@@ -261,13 +277,15 @@ else:
                 line_close=True,
                 range_r=[0, 1]
             )
-            fig_radar.update_layout(height=350)
+            fig_radar.update_layout(height=350, showlegend=False)
             st.plotly_chart(fig_radar, use_container_width=True)
 
         else:
-            # 2) Fallback : analyse simple sur le preview audio (Librosa)
+            # Debug doux si vraiment Spotify fait nimp
+            if audio_error:
+                st.info("Spotify ne fournit pas d’Audio Features pour ce titre.")
+            # Fallback : analyse simple du preview si dispo (sinon rien)
             if track.get("preview_url"):
-                st.info("Spotify ne fournit pas d’Audio Features, analyse basique sur le preview audio.")
                 try:
                     resp = requests.get(track["preview_url"])
                     tmp_name = "temp_preview.m4a"
@@ -279,27 +297,25 @@ else:
 
                     tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
                     rms = librosa.feature.rms(y=y)[0]
-                    spec_centroid = librosa.feature.spectral_centroid(y=y, sr=sr)[0]
 
                     avg_energy = float(np.mean(rms))
-                    avg_centroid = float(np.mean(spec_centroid))
 
                     c1, c2 = st.columns(2)
                     c1.metric("BPM (approx)", int(tempo))
                     c2.metric("Énergie moyenne", round(avg_energy, 4))
 
-                    # Waveform rapide
                     df_wave = pd.DataFrame({"Amplitude": y[::200]})
                     fig_wave = px.line(df_wave, y="Amplitude", title="Waveform (extrait)")
                     fig_wave.update_layout(height=200, showlegend=False)
                     st.plotly_chart(fig_wave, use_container_width=True)
+
                 except Exception:
                     st.warning("Impossible d’analyser le preview audio.")
             else:
                 st.info("Spotify ne fournit ni Audio Features ni preview pour ce titre.")
 
         # -------------------------------------------------
-        # 2.2 — Analyse des paroles (NLP léger)
+        # 2.3 — Texte & charge émotionnelle
         # -------------------------------------------------
         st.subheader("📝 Texte & charge émotionnelle")
 
@@ -309,7 +325,6 @@ else:
             song = None
 
         if song and getattr(song, "lyrics", None):
-            # Nettoyage rapide
             raw_lyrics = song.lyrics
             clean_lyrics = re.sub(r"\[.*?\]", "", raw_lyrics)
 
@@ -331,12 +346,11 @@ else:
             st.info("Paroles introuvables ou non exploitables sur Genius.")
 
         # -------------------------------------------------
-        # 2.3 — Dissonance créative
+        # 2.4 — Dissonance créative
         # -------------------------------------------------
         st.subheader("⚖️ Dissonance créative")
 
         if (audio_valence is not None) and (text_polarity is not None):
-            # Audio valence ∈ [0,1], polarité texte ∈ [−1,1] → on la ramène en [0,1]
             text_valence = (text_polarity + 1) / 2
             dissonance = abs(audio_valence - text_valence)
 
