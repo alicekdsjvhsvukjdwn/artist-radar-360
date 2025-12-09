@@ -77,6 +77,36 @@ query = st.text_input(
     placeholder="Nom de l'artiste ou lien Spotify"
 )
 
+col_search, col_btn = st.columns([4, 1])
+
+with col_btn:
+    load_artist = st.button("Charger")
+
+if load_artist and query:
+    try:
+        result = sp.search(q=query, type="artist", limit=1)
+
+        if result["artists"]["items"]:
+            artist = result["artists"]["items"][0]
+
+            st.session_state.artist_data = {
+                "id": artist["id"],
+                "name": artist["name"],
+                "genres": artist["genres"],
+                "followers": artist["followers"]["total"],
+                "popularity": artist["popularity"],
+                "image": artist["images"][0]["url"] if artist["images"] else None,
+                "url": artist["external_urls"]["spotify"]
+            }
+
+            st.session_state.artist_loaded = True
+        else:
+            st.warning("Aucun artiste trouvé.")
+
+    except Exception as e:
+        st.error("Erreur lors du chargement de l’artiste.")
+
+
 if st.session_state.artist_loaded:
     data = st.session_state.artist_data
 
