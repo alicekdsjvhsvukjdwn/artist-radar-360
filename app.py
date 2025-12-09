@@ -25,6 +25,8 @@ import plotly.graph_objects as go
 import os
 import re
 from bs4 import BeautifulSoup
+from urllib.parse import quote
+
 
 # =========================================================
 # CONFIGURATION
@@ -65,6 +67,42 @@ try:
 except Exception as e:
     st.error("Erreur configuration API")
     st.stop()
+
+def get_any_lyrics(artist_name: str, track_title: str):
+    """
+    Essaie de récupérer des paroles depuis l'API lyrics.ovh.
+    Retourne un string (paroles) ou None.
+    """
+    try:
+        # On nettoie un peu le titre (enlève les trucs entre parenthèses, versions, etc.)
+        clean_title = re.sub(r"\(.*?\)", "", track_title)
+        clean_title = clean_title.split("-")[0].strip()
+
+        def fetch(a, t):
+            url = f"https://api.lyrics.ovh/v1/{quote(a)}/{quote(t)}"
+            resp = requests.get(url, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                txt = data.get("lyrics")
+                if txt and "No lyrics found" not in txt:
+                    return txt.strip()
+            return None
+
+        # 1er essai : artiste + titre complet nettoyé
+        txt = fetch(artist_name, clean_title)
+        if txt:
+            return txt
+
+        # 2e essai : juste le nom de famille / mot principal de l’artiste
+        short_artist = artist_name.split()[-1]
+        txt = fetch(short_artist, clean_title)
+        if txt:
+            return txt
+
+    except Exception:
+        pass
+
+    return None
 
 # =========================================================
 # MODULE 1 — LE MIROIR
@@ -318,22 +356,18 @@ else:
             st.info("Aucun extrait iTunes 30s trouvé pour ce titre.")
 
         # -------------------------------------------------
-        # 2.2 – Paroles : Genius + fallback manuel
+        # 2.2 – Paroles : API externe + fallback manuel
         # -------------------------------------------------
         st.subheader("📝 Texte & charge émotionnelle")
 
         lyrics_text = None
         text_polarity = None
 
-        # 1) Tentative auto via ta fonction de scraping intelligent
-        try:
-            song = get_smart_lyrics(artist_name, track_title)
-        except Exception:
-            song = None
+        # 1) Tentatives automatiques via lyrics.ovh
+        lyrics_text = get_any_lyrics(artist_name, track_title)
 
-        if song and getattr(song, "lyrics", None):
-            lyrics_text = song.lyrics
-        else:
+        # 2) Si rien trouvé, on laisse la main à l’artiste
+        if not lyrics_text:
             st.info("Paroles introuvables automatiquement. Tu peux les coller ci-dessous si tu veux une analyse.")
             manual = st.text_area(
                 "Colle les paroles ici (optionnel) :",
