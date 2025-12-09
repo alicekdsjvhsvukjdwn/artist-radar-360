@@ -171,19 +171,20 @@ if st.session_state.artist_loaded:
 
 
 # =========================================================
-# MODULE 2 — LE LABO (Audio & Texte)
+# MODULE 2 — LE LABO (Audio & Texte, via iTunes + fallback)
 # =========================================================
 st.divider()
 st.header("🧪 LE LABO")
 st.caption("Analyse audio & sémantique — pas pour juger, pour comprendre")
 
 if not st.session_state.artist_loaded:
-    st.info("Charge d’abord un artiste dans la section au-dessus.")
+    st.info("Charge d’abord un·e artiste dans la section au-dessus.")
 else:
     data = st.session_state.artist_data
+    artist_name = data["name"]
 
     # -----------------------------------------------------
-    # 2.0 – Récupération & filtrage des titres
+    # 2.0 – Récupération des titres (toujours via Spotify)
     # -----------------------------------------------------
     try:
         top_resp = sp.artist_top_tracks(data["id"], country="FR")
@@ -191,144 +192,158 @@ else:
     except Exception:
         tracks_raw = []
 
-    # Garder en priorité les titres où l'artiste courant est dans les artistes du track
     tracks = [
         t for t in tracks_raw
         if any(a.get("id") == data["id"] for a in t.get("artists", []))
-    ]
-
-    # Si après filtrage y'a plus rien, on retombe sur la liste brute
-    if not tracks:
-        tracks = tracks_raw
+    ] or tracks_raw
 
     if not tracks:
         st.warning("Aucun titre exploitable trouvé pour cet artiste.")
     else:
-        # On utilise un selectbox sur des indices pour éviter les problèmes de labels/état
-        labels = [
-            f"{t['name']} – {t['album']['name']}" for t in tracks
-        ]
+        labels = [f"{t['name']} – {t['album']['name']}" for t in tracks]
 
         selected_index = st.selectbox(
             "Choisis un titre",
             options=list(range(len(tracks))),
-            format_func=lambda i: labels[i]
+            format_func=lambda i: labels[i],
+            key="labo_track_select"
         )
 
         track = tracks[selected_index]
+        track_title = track["name"]
 
         # -------------------------------------------------
-        # 2.1 — Carte d’identité rapide du titre
-        # -------------------------------------------------
-        info_col1, info_col2 = st.columns([1, 3])
-        with info_col1:
-            if track.get("album", {}).get("images"):
-                st.image(track["album"]["images"][0]["url"], width=120)
-        with info_col2:
-            st.markdown(f"**{track['name']}**")
-            st.caption(track["album"]["name"])
-            # Affichage du player si un preview existe
-            if track.get("preview_url"):
-                st.audio(track["preview_url"], format="audio/mp4")
-
-        # Variables pour la dissonance
-        audio_valence = None
-        text_polarity = None
-
-        # -------------------------------------------------
-        # 2.2 — ADN sonore
+        # 2.1 – iTunes : preview 30s + analyse audio
         # -------------------------------------------------
         st.subheader("🧬 ADN sonore")
-        features = None
-        audio_error = None
 
-        # 1) Tentative avec Spotify Audio Features
-        try:
-            af_list = sp.audio_features([track["id"]])
-            if af_list and af_list[0]:
-                features = af_list[0]
-        except Exception as e:
-            audio_error = str(e)
-            features = None
+        def get_itunes_preview_for_track(artist_name: str, track_title: str):
+            try:
+                term = f"{artist_name} {track_title}"
+                params = {
+                    "term": term,
+                    "media": "music",
+                    "entity": "song",
+                    "limit": 5
+                }
+                resp = requests.get("https://itunes.apple.com/search", params=params)
+                data_it = resp.json()
+                if data_it.get("resultCount", 0) == 0:
+                    return None
 
-        if features is not None:
-            audio_valence = features.get("valence")
+                # On essaie de matcher au mieux artiste + titre
+                def norm(s):
+                    return re.sub(r"[^a-z0-9]", "", s.lower())
 
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("BPM", int(features.get("tempo", 0)))
-            c2.metric("Énergie", round(features.get("energy", 0), 2))
-            c3.metric("Dansabilité", round(features.get("danceability", 0), 2))
-            c4.metric("Valence", round(features.get("valence", 0), 2))
+                n_artist = norm(artist_name)
+                n_title = norm(track_title)
 
-            radar_df = pd.DataFrame({
-                "Feature": ["Énergie", "Dansabilité", "Valence", "Acoustique"],
-                "Valeur": [
-                    features.get("energy", 0),
-                    features.get("danceability", 0),
-                    features.get("valence", 0),
-                    features.get("acousticness", 0)
-                ]
-            })
+                best = None
+                for item in data_it["results"]:
+                    a_ok = n_artist in norm(item.get("artistName", ""))
+                    t_ok = n_title in norm(item.get("trackName", ""))
+                    if a_ok and t_ok:
+                        best = item
+                        break
+                if best is None:
+                    best = data_it["results"][0]
 
-            fig_radar = px.line_polar(
-                radar_df,
-                r="Valeur",
-                theta="Feature",
-                line_close=True,
-                range_r=[0, 1]
-            )
-            fig_radar.update_layout(height=350, showlegend=False)
-            st.plotly_chart(fig_radar, use_container_width=True)
+                return {
+                    "title": best.get("trackName"),
+                    "artist": best.get("artistName"),
+                    "preview_url": best.get("previewUrl"),
+                    "cover": best.get("artworkUrl100")
+                }
+            except Exception:
+                return None
 
+        itunes_data = get_itunes_preview_for_track(artist_name, track_title)
+
+        audio_mood = None  # proxy d'humeur audio (0-1)
+
+        info_col1, info_col2 = st.columns([1, 3])
+        with info_col1:
+            # Pochette iTunes si dispo, sinon album Spotify
+            if itunes_data and itunes_data.get("cover"):
+                st.image(itunes_data["cover"], width=120)
+            elif track.get("album", {}).get("images"):
+                st.image(track["album"]["images"][0]["url"], width=120)
+        with info_col2:
+            st.markdown(f"**{track_title}**")
+            st.caption(track["album"]["name"])
+            if itunes_data and itunes_data.get("preview_url"):
+                st.audio(itunes_data["preview_url"])
+            elif track.get("preview_url"):
+                st.audio(track["preview_url"])
+
+        if itunes_data and itunes_data.get("preview_url"):
+            try:
+                resp = requests.get(itunes_data["preview_url"])
+                tmp_name = "temp_preview.m4a"
+                with open(tmp_name, "wb") as f:
+                    f.write(resp.content)
+
+                # 30 secondes max
+                y, sr = librosa.load(tmp_name, duration=30)
+                os.remove(tmp_name)
+
+                tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+                rms = librosa.feature.rms(y=y)[0]
+                spec_centroid = librosa.feature.spectral_centroid(y=y, sr=sr)[0]
+
+                avg_energy = float(np.mean(rms))
+                avg_centroid = float(np.mean(spec_centroid))
+                dynamic_range = float(np.max(rms) - np.min(rms))
+
+                # Proxy d'humeur audio (0-1) : tempo + brillance normalisés
+                tempo_norm = float(np.clip((tempo - 60) / (180 - 60), 0, 1))  # 60-180 bpm
+                bright_norm = float(np.clip((avg_centroid - 1000) / (6000 - 1000), 0, 1))
+                audio_mood = (tempo_norm + bright_norm) / 2
+
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("BPM (approx)", int(tempo))
+                c2.metric("Énergie moyenne", round(avg_energy, 4))
+                c3.metric("Brillance moyenne", int(avg_centroid))
+                c4.metric("Dynamique", round(dynamic_range, 4))
+
+                # Waveform rapide
+                df_wave = pd.DataFrame({"Amplitude": y[::200]})
+                fig_wave = px.line(df_wave, y="Amplitude", title="Waveform (preview 30s)")
+                fig_wave.update_layout(height=200, showlegend=False)
+                st.plotly_chart(fig_wave, use_container_width=True)
+
+            except Exception:
+                st.warning("Impossible d’analyser le preview audio (problème réseau ou format).")
         else:
-            # Debug doux si vraiment Spotify fait nimp
-            if audio_error:
-                st.info("Spotify ne fournit pas d’Audio Features pour ce titre.")
-            # Fallback : analyse simple du preview si dispo (sinon rien)
-            if track.get("preview_url"):
-                try:
-                    resp = requests.get(track["preview_url"])
-                    tmp_name = "temp_preview.m4a"
-                    with open(tmp_name, "wb") as f:
-                        f.write(resp.content)
-
-                    y, sr = librosa.load(tmp_name, duration=30)
-                    os.remove(tmp_name)
-
-                    tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
-                    rms = librosa.feature.rms(y=y)[0]
-
-                    avg_energy = float(np.mean(rms))
-
-                    c1, c2 = st.columns(2)
-                    c1.metric("BPM (approx)", int(tempo))
-                    c2.metric("Énergie moyenne", round(avg_energy, 4))
-
-                    df_wave = pd.DataFrame({"Amplitude": y[::200]})
-                    fig_wave = px.line(df_wave, y="Amplitude", title="Waveform (extrait)")
-                    fig_wave.update_layout(height=200, showlegend=False)
-                    st.plotly_chart(fig_wave, use_container_width=True)
-
-                except Exception:
-                    st.warning("Impossible d’analyser le preview audio.")
-            else:
-                st.info("Spotify ne fournit ni Audio Features ni preview pour ce titre.")
+            st.info("Aucun extrait iTunes 30s trouvé pour ce titre.")
 
         # -------------------------------------------------
-        # 2.3 — Texte & charge émotionnelle
+        # 2.2 – Paroles : Genius + fallback manuel
         # -------------------------------------------------
         st.subheader("📝 Texte & charge émotionnelle")
 
+        lyrics_text = None
+        text_polarity = None
+
+        # 1) Tentative auto via ta fonction de scraping intelligent
         try:
-            song = genius.search_song(track["name"], data["name"])
+            song = get_smart_lyrics(artist_name, track_title)
         except Exception:
             song = None
 
         if song and getattr(song, "lyrics", None):
-            raw_lyrics = song.lyrics
-            clean_lyrics = re.sub(r"\[.*?\]", "", raw_lyrics)
+            lyrics_text = song.lyrics
+        else:
+            st.info("Paroles introuvables automatiquement. Tu peux les coller ci-dessous si tu veux une analyse.")
+            manual = st.text_area(
+                "Colle les paroles ici (optionnel) :",
+                key="manual_lyrics_input"
+            )
+            if manual.strip():
+                lyrics_text = manual.strip()
 
-            blob = TextBlob(clean_lyrics)
+        if lyrics_text:
+            blob = TextBlob(lyrics_text)
             text_polarity = float(blob.sentiment.polarity)
             subjectivity = float(blob.sentiment.subjectivity)
 
@@ -340,28 +355,29 @@ else:
             c2.metric("Subjectivité", round(subjectivity, 2))
             c3.metric("Richesse lexicale", vocab_size)
 
-            with st.expander("Voir un extrait des paroles"):
-                st.text("\n".join(clean_lyrics.split("\n")[:15]))
+            with st.expander("Voir un extrait des paroles analysées"):
+                st.text("\n".join(lyrics_text.split("\n")[:15]))
         else:
-            st.info("Paroles introuvables ou non exploitables sur Genius.")
+            st.info("Aucune parole disponible pour l’instant.")
 
         # -------------------------------------------------
-        # 2.4 — Dissonance créative
+        # 2.3 – Dissonance créative (audio vs texte)
         # -------------------------------------------------
         st.subheader("⚖️ Dissonance créative")
 
-        if (audio_valence is not None) and (text_polarity is not None):
+        if (audio_mood is not None) and (text_polarity is not None):
+            # polarité texte [-1,1] → [0,1]
             text_valence = (text_polarity + 1) / 2
-            dissonance = abs(audio_valence - text_valence)
+            dissonance = abs(audio_mood - text_valence)
 
-            st.metric("Score de dissonance", round(dissonance, 2))
+            st.metric("Score de dissonance (0-1)", round(dissonance, 2))
 
             if dissonance > 0.4:
-                st.success("🎭 Forte tension créative entre son et texte.")
+                st.success("🎭 Forte tension créative entre ambiance sonore et contenu du texte.")
             else:
-                st.info("🎯 Cohérence émotionnelle forte entre son et texte.")
+                st.info("🎯 Cohérence émotionnelle globale entre son et texte.")
         else:
-            st.info("Données insuffisantes pour calculer la dissonance (son ou texte manquant).")
+            st.info("Données insuffisantes pour calculer la dissonance (audio ou texte manquant).")
 
 # =========================================================
 # MODULE 3 — LE CONTEXTE
