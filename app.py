@@ -178,79 +178,176 @@ st.header("🧪 LE LABO")
 st.caption("Analyse audio & sémantique — pas pour juger, pour comprendre")
 
 if not st.session_state.artist_loaded:
-    st.info("Charge un artiste pour lancer l’analyse.")
+    st.info("Charge d’abord un artiste dans la section au-dessus.")
 else:
     data = st.session_state.artist_data
 
     # -----------------------------------------------------
-    # Sélection d’un titre
+    # 2.0 – Récupération des titres
     # -----------------------------------------------------
-    tracks = sp.artist_top_tracks(data["id"], country="FR")["tracks"]
+    try:
+        top_resp = sp.artist_top_tracks(data["id"], country="FR")
+        tracks = top_resp.get("tracks", [])
+    except Exception:
+        tracks = []
 
     if not tracks:
-        st.warning("Aucun titre analysable.")
+        st.warning("Aucun titre exploitable trouvé pour cet artiste.")
     else:
-        track_names = [t["name"] for t in tracks]
-        selected_track_name = st.selectbox("Choisis un titre", track_names)
+        # Label lisible pour le selectbox
+        options = {
+            f"{t['name']} – {t['album']['name']}": t
+            for t in tracks
+        }
+        selected_label = st.selectbox(
+            "Choisis un titre",
+            list(options.keys()),
+            key="labo_track_select"
+        )
+        track = options[selected_label]
 
-        track = next(t for t in tracks if t["name"] == selected_track_name)
+        # Info rapide sur le titre
+        info_col1, info_col2 = st.columns([1, 3])
+        with info_col1:
+            if track["album"]["images"]:
+                st.image(track["album"]["images"][0]["url"], width=120)
+        with info_col2:
+            st.markdown(f"**{track['name']}**")
+            st.caption(track["album"]["name"])
+            if track.get("preview_url"):
+                st.audio(track["preview_url"], format="audio/mp4")
+
+        # Variables pour la dissonance
+        audio_valence = None
+        text_polarity = None
 
         # -------------------------------------------------
-        # 2.1 — Analyse Audio (Spotify Audio Features)
+        # 2.1 — ADN sonore
         # -------------------------------------------------
-        st.subheader("🎚️ ADN sonore")
+        st.subheader("🧬 ADN sonore")
+        features = None
 
+        # 1) Tentative avec Spotify Audio Features
         try:
-            af = sp.audio_features([track["id"]])
-            features = af[0] if af and af[0] else None
+            af_list = sp.audio_features([track["id"]])
+            if af_list and af_list[0]:
+                features = af_list[0]
         except Exception:
             features = None
 
         if features is not None:
+            audio_valence = features.get("valence")
+
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("BPM", int(features["tempo"]))
-            c2.metric("Énergie", round(features["energy"], 2))
-            c3.metric("Dansabilité", round(features["danceability"], 2))
-            c4.metric("Valence", round(features["valence"], 2))
+            c1.metric("BPM", int(features.get("tempo", 0)))
+            c2.metric("Énergie", round(features.get("energy", 0), 2))
+            c3.metric("Dansabilité", round(features.get("danceability", 0), 2))
+            c4.metric("Valence", round(features.get("valence", 0), 2))
 
             radar_df = pd.DataFrame({
                 "Feature": ["Énergie", "Dansabilité", "Valence", "Acoustique"],
                 "Valeur": [
-                    features["energy"],
-                    features["danceability"],
-                    features["valence"],
-                    features["acousticness"]
+                    features.get("energy", 0),
+                    features.get("danceability", 0),
+                    features.get("valence", 0),
+                    features.get("acousticness", 0)
                 ]
             })
 
-            fig = px.line_polar(
+            fig_radar = px.line_polar(
                 radar_df,
                 r="Valeur",
                 theta="Feature",
                 line_close=True,
                 range_r=[0, 1]
             )
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("Spotify ne fournit pas d’Audio Features pour ce titre.")
+            fig_radar.update_layout(height=350)
+            st.plotly_chart(fig_radar, use_container_width=True)
 
+        else:
+            # 2) Fallback : analyse simple sur le preview audio (Librosa)
+            if track.get("preview_url"):
+                st.info("Spotify ne fournit pas d’Audio Features, analyse basique sur le preview audio.")
+                try:
+                    resp = requests.get(track["preview_url"])
+                    tmp_name = "temp_preview.m4a"
+                    with open(tmp_name, "wb") as f:
+                        f.write(resp.content)
+
+                    y, sr = librosa.load(tmp_name, duration=30)
+                    os.remove(tmp_name)
+
+                    tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+                    rms = librosa.feature.rms(y=y)[0]
+                    spec_centroid = librosa.feature.spectral_centroid(y=y, sr=sr)[0]
+
+                    avg_energy = float(np.mean(rms))
+                    avg_centroid = float(np.mean(spec_centroid))
+
+                    c1, c2 = st.columns(2)
+                    c1.metric("BPM (approx)", int(tempo))
+                    c2.metric("Énergie moyenne", round(avg_energy, 4))
+
+                    # Waveform rapide
+                    df_wave = pd.DataFrame({"Amplitude": y[::200]})
+                    fig_wave = px.line(df_wave, y="Amplitude", title="Waveform (extrait)")
+                    fig_wave.update_layout(height=200, showlegend=False)
+                    st.plotly_chart(fig_wave, use_container_width=True)
+                except Exception:
+                    st.warning("Impossible d’analyser le preview audio.")
+            else:
+                st.info("Spotify ne fournit ni Audio Features ni preview pour ce titre.")
 
         # -------------------------------------------------
-        # 2.3 — Dissonance créative (son vs texte)
+        # 2.2 — Analyse des paroles (NLP léger)
+        # -------------------------------------------------
+        st.subheader("📝 Texte & charge émotionnelle")
+
+        try:
+            song = genius.search_song(track["name"], data["name"])
+        except Exception:
+            song = None
+
+        if song and getattr(song, "lyrics", None):
+            # Nettoyage rapide
+            raw_lyrics = song.lyrics
+            clean_lyrics = re.sub(r"\[.*?\]", "", raw_lyrics)
+
+            blob = TextBlob(clean_lyrics)
+            text_polarity = float(blob.sentiment.polarity)
+            subjectivity = float(blob.sentiment.subjectivity)
+
+            words = [w for w in blob.words if w.isalpha()]
+            vocab_size = len(set([w.lower() for w in words]))
+
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Polarité (−1 à 1)", round(text_polarity, 2))
+            c2.metric("Subjectivité", round(subjectivity, 2))
+            c3.metric("Richesse lexicale", vocab_size)
+
+            with st.expander("Voir un extrait des paroles"):
+                st.text("\n".join(clean_lyrics.split("\n")[:15]))
+        else:
+            st.info("Paroles introuvables ou non exploitables sur Genius.")
+
+        # -------------------------------------------------
+        # 2.3 — Dissonance créative
         # -------------------------------------------------
         st.subheader("⚖️ Dissonance créative")
 
-        if features and "polarity" in locals():
-            dissonance = abs(features["valence"] - ((polarity + 1) / 2))
+        if (audio_valence is not None) and (text_polarity is not None):
+            # Audio valence ∈ [0,1], polarité texte ∈ [−1,1] → on la ramène en [0,1]
+            text_valence = (text_polarity + 1) / 2
+            dissonance = abs(audio_valence - text_valence)
 
             st.metric("Score de dissonance", round(dissonance, 2))
 
             if dissonance > 0.4:
-                st.success("🎭 Forte tension créative (joie sonore / texte sombre ou inverse).")
+                st.success("🎭 Forte tension créative entre son et texte.")
             else:
-                st.info("🎯 Alignement émotionnel classique (cohérence forte).")
+                st.info("🎯 Cohérence émotionnelle forte entre son et texte.")
         else:
-            st.info("Données insuffisantes pour calculer la dissonance.")
+            st.info("Données insuffisantes pour calculer la dissonance (son ou texte manquant).")
 
 # =========================================================
 # MODULE 3 — LE CONTEXTE
