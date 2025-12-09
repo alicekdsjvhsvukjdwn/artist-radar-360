@@ -175,7 +175,106 @@ if st.session_state.artist_loaded:
 # =========================================================
 st.divider()
 st.header("🧪 LE LABO")
-st.info("Analyse du son et du texte (à implémenter ici)")
+st.caption("Analyse audio & sémantique — pas pour juger, pour comprendre")
+
+if not st.session_state.artist_loaded:
+    st.info("Charge un artiste pour lancer l’analyse.")
+else:
+    data = st.session_state.artist_data
+
+    # -----------------------------------------------------
+    # Sélection d’un titre
+    # -----------------------------------------------------
+    tracks = sp.artist_top_tracks(data["id"], country="FR")["tracks"]
+
+    if not tracks:
+        st.warning("Aucun titre analysable.")
+    else:
+        track_names = [t["name"] for t in tracks]
+        selected_track_name = st.selectbox("Choisis un titre", track_names)
+
+        track = next(t for t in tracks if t["name"] == selected_track_name)
+
+        # -------------------------------------------------
+        # 2.1 — Analyse Audio (Spotify Audio Features)
+        # -------------------------------------------------
+        st.subheader("🎚️ ADN sonore")
+
+        features = sp.audio_features([track["id"]])[0]
+
+        if features:
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("BPM", int(features["tempo"]))
+            c2.metric("Énergie", round(features["energy"], 2))
+            c3.metric("Dansabilité", round(features["danceability"], 2))
+            c4.metric("Valence", round(features["valence"], 2))
+
+            radar_df = pd.DataFrame({
+                "Feature": ["Énergie", "Dansabilité", "Valence", "Acoustique"],
+                "Valeur": [
+                    features["energy"],
+                    features["danceability"],
+                    features["valence"],
+                    features["acousticness"]
+                ]
+            })
+
+            fig = px.line_polar(
+                radar_df,
+                r="Valeur",
+                theta="Feature",
+                line_close=True,
+                range_r=[0, 1]
+            )
+            fig.update_layout(height=350)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Spotify ne fournit pas d’Audio Features pour ce titre.")
+
+        # -------------------------------------------------
+        # 2.2 — Analyse des paroles (NLP léger)
+        # -------------------------------------------------
+        st.subheader("📝 Texte & charge émotionnelle")
+
+        try:
+            song = genius.search_song(track["name"], data["name"])
+            if song and song.lyrics:
+                lyrics = re.sub(r"\[.*?\]", "", song.lyrics)
+
+                blob = TextBlob(lyrics)
+                polarity = blob.sentiment.polarity
+                subjectivity = blob.sentiment.subjectivity
+                vocab_size = len(set(blob.words))
+
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Polarité", round(polarity, 2))
+                c2.metric("Subjectivité", round(subjectivity, 2))
+                c3.metric("Richesse lexicale", vocab_size)
+
+                with st.expander("Voir un extrait de texte"):
+                    st.text("\n".join(lyrics.split("\n")[:12]))
+
+            else:
+                st.info("Paroles non disponibles sur Genius.")
+        except Exception:
+            st.warning("Erreur lors de l’analyse des paroles.")
+
+        # -------------------------------------------------
+        # 2.3 — Dissonance créative (son vs texte)
+        # -------------------------------------------------
+        st.subheader("⚖️ Dissonance créative")
+
+        if features and "polarity" in locals():
+            dissonance = abs(features["valence"] - ((polarity + 1) / 2))
+
+            st.metric("Score de dissonance", round(dissonance, 2))
+
+            if dissonance > 0.4:
+                st.success("🎭 Forte tension créative (joie sonore / texte sombre ou inverse).")
+            else:
+                st.info("🎯 Alignement émotionnel classique (cohérence forte).")
+        else:
+            st.info("Données insuffisantes pour calculer la dissonance.")
 
 # =========================================================
 # MODULE 3 — LE CONTEXTE
