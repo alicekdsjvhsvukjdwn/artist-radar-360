@@ -140,44 +140,6 @@ if st.session_state.artist_loaded:
         st.info("Aucune sortie détectée.")
 
 
-# --- Indicateurs
-c1, c2, c3 = st.columns(3)
-c1.metric("Auditeurs / intérêt", data["popularity"])
-c2.metric("Followers", f"{data['followers']:,}")
-c3.metric("Genres détectés", len(data["genres"]))
-
-st.subheader("🧭 Continuité créative")
-
-albums = sp.artist_albums(
-    data["id"],
-    album_type="single,album",
-    limit=20,
-    country="FR"
-)
-
-dates = []
-titles = []
-
-for item in albums["items"]:
-    dates.append(item["release_date"])
-    titles.append(item["name"])
-
-df_timeline = pd.DataFrame({
-    "Date": pd.to_datetime(dates),
-    "Sortie": titles
-}).sort_values("Date")
-
-fig = px.scatter(
-    df_timeline,
-    x="Date",
-    y=[1]*len(df_timeline),
-    hover_name="Sortie"
-)
-fig.update_yaxes(visible=False)
-fig.update_layout(height=200)
-
-st.plotly_chart(fig, use_container_width=True)
-
 # =========================================================
 # MODULE 2 — LE LABO (Audio & Texte)
 # =========================================================
