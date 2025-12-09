@@ -77,33 +77,12 @@ query = st.text_input(
     placeholder="Nom de l'artiste ou lien Spotify"
 )
 
-if st.button("Charger l'artiste"):
-    try:
-        if "spotify.com" in query:
-            artist_id = query.split("/artist/")[1].split("?")[0]
-            artist = sp.artist(artist_id)
-        else:
-            results = sp.search(q=query, type="artist", limit=5, market="FR")
-            artist = results["artists"]["items"][0]
-
-        st.session_state.artist_data = {
-            "id": artist["id"],
-            "name": artist["name"],
-            "followers": artist["followers"]["total"],
-            "popularity": artist["popularity"],
-            "genres": artist["genres"],
-            "image": artist["images"][0]["url"] if artist["images"] else None,
-            "url": artist["external_urls"]["spotify"]
-        }
-
-        st.session_state.artist_loaded = True
-
-    except:
-        st.warning("Artiste introuvable")
 if st.session_state.artist_loaded:
     data = st.session_state.artist_data
+
     st.divider()
 
+    # --- Header artiste
     col1, col2 = st.columns([1, 3])
 
     with col1:
@@ -112,10 +91,54 @@ if st.session_state.artist_loaded:
 
     with col2:
         st.subheader(data["name"])
-        st.caption(", ".join(data["genres"][:3]))
+        if data["genres"]:
+            st.caption(", ".join(data["genres"][:3]))
         st.markdown(f"[Spotify ↗]({data['url']})")
 
     st.divider()
+
+    # --- Indicateurs de présence
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Auditeurs / intérêt", data["popularity"])
+    c2.metric("Followers", f"{data['followers']:,}")
+    c3.metric("Genres détectés", len(data["genres"]))
+
+    # --- Continuité créative
+    st.subheader("🧭 Continuité créative")
+
+    albums = sp.artist_albums(
+        data["id"],
+        album_type="single,album",
+        limit=20,
+        country="FR"
+    )
+
+    dates, titles = [], []
+
+    for item in albums["items"]:
+        if item["release_date"]:
+            dates.append(item["release_date"])
+            titles.append(item["name"])
+
+    if dates:
+        df_timeline = pd.DataFrame({
+            "Date": pd.to_datetime(dates),
+            "Sortie": titles
+        }).sort_values("Date")
+
+        fig = px.scatter(
+            df_timeline,
+            x="Date",
+            y=[1]*len(df_timeline),
+            hover_name="Sortie"
+        )
+        fig.update_yaxes(visible=False)
+        fig.update_layout(height=200)
+
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Aucune sortie détectée.")
+
 
 # --- Indicateurs
 c1, c2, c3 = st.columns(3)
