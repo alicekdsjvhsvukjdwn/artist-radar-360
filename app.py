@@ -299,3 +299,155 @@ if st.session_state.search_done and query:
                     st.error(f"Paroles introuvables pour {target_title}.")
             else:
                 st.warning("Titre non défini.")
+
+
+# ... (Tes imports habituels : st, spotipy, pandas, plotly.graph_objects as go) ...
+import plotly.graph_objects as go # Il faut ajouter cet import en haut !
+
+# =========================================================
+# MODULE : STYLE BENCHMARKER
+# =========================================================
+st.divider()
+st.markdown("### ⚔️ Le Duel : Ton Son vs La Tendance")
+st.caption("Compare ton titre aux Hits actuels d'un genre précis.")
+
+col_input1, col_input2, col_go = st.columns([2, 2, 1])
+
+with col_input1:
+    target_track_name = st.text_input("Ton Titre (à tester)", placeholder="Ex: La Fève - MAUVAIS PAYEUR")
+with col_input2:
+    target_genre = st.text_input("Le Style Visé", placeholder="Ex: french hip hop, hyperpop, techno...")
+with col_go:
+    st.write("")
+    st.write("")
+    btn_compare = st.button("Comparer ⚔️")
+
+if btn_compare and target_track_name and target_genre:
+    
+    with st.spinner(f"Analyse du marché '{target_genre}' en cours..."):
+        try:
+            # 1. ANALYSE DE TON SON (CIBLE)
+            # On cherche le son
+            res_target = sp.search(q=target_track_name, type='track', limit=1)
+            if not res_target['tracks']['items']:
+                st.error("Ton titre est introuvable.")
+                st.stop()
+            
+            my_track = res_target['tracks']['items'][0]
+            my_features = sp.audio_features(my_track['id'])[0]
+            
+            # 2. ANALYSE DU MARCHÉ (RÉFÉRENCE)
+            # On cherche les 50 tracks les plus populaires de ce genre
+            # La requête "genre:nom_du_genre" est puissante
+            res_genre = sp.search(q=f'genre:"{target_genre}"', type='track', limit=50)
+            
+            if not res_genre['tracks']['items']:
+                st.error(f"Aucun hit trouvé pour le genre '{target_genre}'. Essaie un autre nom (ex: 'pop', 'trap', 'house').")
+                st.stop()
+                
+            genre_tracks = res_genre['tracks']['items']
+            
+            # On récupère les IDs pour avoir les features
+            genre_ids = [t['id'] for t in genre_tracks]
+            # Spotify limite à 100 ids par appel, ça passe
+            genre_features_list = sp.audio_features(genre_ids)
+            
+            # On nettoie (enlève les None)
+            genre_features_list = [f for f in genre_features_list if f]
+            
+            # 3. CALCUL DES MOYENNES (DATA SCIENCE)
+            df_genre = pd.DataFrame(genre_features_list)
+            
+            avg_stats = {
+                'Energy': df_genre['energy'].mean(),
+                'Danceability': df_genre['danceability'].mean(),
+                'Valence': df_genre['valence'].mean(),
+                'Acousticness': df_genre['acousticness'].mean(),
+                # On normalise la Loudness (qui est en négatif genre -5dB) pour le graph
+                # Astuce : (Loudness + 60) / 60 pour avoir un truc entre 0 et 1
+                'Puissance (Loudness)': (df_genre['loudness'].mean() + 60) / 60
+            }
+            
+            my_stats = {
+                'Energy': my_features['energy'],
+                'Danceability': my_features['danceability'],
+                'Valence': my_features['valence'],
+                'Acousticness': my_features['acousticness'],
+                'Puissance (Loudness)': (my_features['loudness'] + 60) / 60
+            }
+
+            # 4. VISUALISATION RADAR (SPIDER CHART)
+            categories = list(avg_stats.keys())
+            
+            fig = go.Figure()
+
+            # La zone "Marché" (Moyenne)
+            fig.add_trace(go.Scatterpolar(
+                r=list(avg_stats.values()),
+                theta=categories,
+                fill='toself',
+                name=f'Moyenne {target_genre}',
+                line_color='gray',
+                opacity=0.5
+            ))
+
+            # La ligne "Ton Son"
+            fig.add_trace(go.Scatterpolar(
+                r=list(my_stats.values()),
+                theta=categories,
+                fill='toself',
+                name='Ton Son',
+                line_color='#1DB954' # Vert Spotify
+            ))
+
+            fig.update_layout(
+                polar=dict(radialaxis=dict(visible=True, range=[0, 1])),
+                showlegend=True,
+                title=f"Comparatif : {my_track['name']} vs Top 50 {target_genre}"
+            )
+            
+            # 5. AFFICHAGE RÉSULTATS
+            c1, c2 = st.columns([1, 2])
+            
+            with c1:
+                st.image(my_track['album']['images'][0]['url'], width=150)
+                st.metric("Ta Popularité", f"{my_track['popularity']}/100")
+                
+                # Moyenne popularité du genre
+                avg_pop = sum([t['popularity'] for t in genre_tracks]) / len(genre_tracks)
+                st.metric(f"Moyenne du Top {target_genre}", f"{int(avg_pop)}/100")
+                
+                delta_pop = my_track['popularity'] - avg_pop
+                if delta_pop >= -10:
+                    st.success("✅ Tu es dans la norme des Hits !")
+                else:
+                    st.warning("⚠️ Tu es en dessous des standards du genre.")
+
+            with c2:
+                st.plotly_chart(fig, use_container_width=True)
+                
+            # 6. CONSEILS AUTOMATISÉS (PREDICTION)
+            st.subheader("💡 Conseils Stratégiques")
+            
+            # Durée
+            avg_duration = df_genre['duration_ms'].mean() / 1000
+            my_duration = my_features['duration_ms'] / 1000
+            diff_duration = my_duration - avg_duration
+            
+            if diff_duration > 30:
+                st.error(f"⏱️ **Durée :** Ton son est trop long ({int(my_duration)}s). La moyenne du genre est à {int(avg_duration)}s. Coupe {int(diff_duration)}s pour optimiser le replay.")
+            elif diff_duration < -30:
+                st.warning(f"⏱️ **Durée :** Ton son est très court. C'est bien pour TikTok, mais vérifie qu'il est assez construit.")
+            else:
+                st.success(f"⏱️ **Durée :** Parfaite ({int(my_duration)}s). Tu es pile dans le standard.")
+                
+            # Energie
+            if my_stats['Energy'] < avg_stats['Energy'] - 0.2:
+                st.info(f"⚡ **Énergie :** Ton mixage manque de peps comparé aux hits. Pense à compresser ou saturer plus.")
+            
+            # Danceability
+            if my_stats['Danceability'] < avg_stats['Danceability'] - 0.2:
+                st.info(f"💃 **Rythme :** Ton son est moins 'dansant' que la moyenne. Attention si tu vises les clubs.")
+
+        except Exception as e:
+            st.error(f"Erreur lors de l'analyse comparative : {e}")
