@@ -381,8 +381,9 @@ else:
             text_polarity = float(blob.sentiment.polarity)
             subjectivity = float(blob.sentiment.subjectivity)
 
-            words = [w for w in blob.words if w.isalpha()]
-            vocab_size = len(set([w.lower() for w in words]))
+            # Richesse lexicale sans TextBlob.words (évite MissingCorpusError)
+            tokens = re.findall(r"\b\w+\b", lyrics_text.lower())
+            vocab_size = len(set(tokens)) if tokens else 0
 
             c1, c2, c3 = st.columns(3)
             c1.metric("Polarité (−1 à 1)", round(text_polarity, 2))
