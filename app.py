@@ -467,8 +467,12 @@ else:
                 st.error("Titre introuvable sur Spotify. Essaie un format `Artiste – Titre` ou un autre morceau.")
             else:
                 my_track = items[0]
-                feats_list = sp.audio_features([my_track["id"]])
-                my_features = feats_list[0] if feats_list and feats_list[0] else None
+                
+                try:
+                    feats_list = sp.audio_features([my_track["id"]])
+                    my_features = feats_list[0] if feats_list and feats_list[0] else None
+                except Exception:
+                    my_features = None
 
                 if my_features is None:
                     st.error("Spotify ne fournit pas d’Audio Features pour ce titre de référence.")
@@ -502,8 +506,12 @@ else:
                         )
                     else:
                         genre_ids = [t["id"] for t in genre_items]
-                        genre_features_raw = sp.audio_features(genre_ids)
-                        genre_features = [f for f in genre_features_raw if f]
+
+                        try : 
+                            genre_features_raw = sp.audio_features(genre_ids)
+                            genre_features = [f for f in genre_features_raw if f]
+                        except Exception:
+                            genre_features = []
 
                         if not genre_features:
                             st.error("Spotify ne fournit pas d’Audio Features pour les titres de ce style.")
