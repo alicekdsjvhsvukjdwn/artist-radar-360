@@ -1,15 +1,6 @@
 # =========================================================
 # PROJET 2 – Artist Performance & Strategy Dashboard
 # =========================================================
-# Architecture alignée avec le plan :
-# 1. L'AUDIT ARTISTE (Diagnostic carrière)
-# 2. LE LABO D'ANALYSE (Produit : son + texte)
-# 3. LE COMPARATEUR (Benchmark vs style / concurrence)
-# 4. LE PRÉDICTEUR DE TENDANCE (Tendance marché)
-#
-# TODO : implémenter la partie "catalogue / multi-artistes"
-# pour coller encore plus au point de vue label/boîte.
-# =========================================================
 
 # UI & Data
 import streamlit as st
@@ -41,7 +32,7 @@ from urllib.parse import quote
 # CONFIGURATION GÉNÉRALE
 # =========================================================
 st.set_page_config(
-    page_title="Artist Strategy Dashboard",
+    page_title="Artist Performance & Strategy Dashboard",
     page_icon="📊",
     layout="wide"
 )
@@ -52,10 +43,6 @@ DEFAULT_STATE = {
     "artist_data": None,
     "audio_done": False,
     "lyrics_done": False,
-    # TODO: ajouter plus tard :
-    # "catalog_loaded": False,
-    # "df_tracks": None,
-    # "df_artists": None,
 }
 
 for k, v in DEFAULT_STATE.items():
@@ -87,14 +74,103 @@ except Exception:
 # FONCTIONS UTILITAIRES GLOBALES
 # =========================================================
 
+def _norm_text(s: str) -> str:
+    """Normalise un texte pour comparer les noms (minuscules, sans accents, sans caractères spéciaux)."""
+    if not s:
+        return ""
+    s = s.lower()
+    # Option simple : enlever tout sauf lettres/chiffres
+    s = re.sub(r"[^a-z0-9]", "", s)
+    return s
+
+
+def _parse_spotify_artist_id_from_query(query: str):
+    """
+    Si l'utilisateur colle un lien Spotify d'artiste,
+    on extrait l'ID directement.
+    """
+    if not query:
+        return None
+    # Exemple : https://open.spotify.com/artist/4W63Zz1gVQpFDuBt06yQhg?si=...
+    m = re.search(r"open\.spotify\.com/artist/([a-zA-Z0-9]+)", query)
+    if m:
+        return m.group(1)
+    return None
+
+
+def search_best_artist(query: str):
+    """
+    Retourne le meilleur artiste Spotify pour une requête donnée,
+    en évitant le piège du 'premier résultat au hasard'.
+
+    Stratégie :
+    1. Si lien Spotify -> on récupère directement l'artiste par ID.
+    2. Sinon :
+       - on cherche jusqu'à 10 artistes,
+       - on privilégie :
+         a) nom EXACT (normalisé),
+         b) nom qui commence par la requête,
+         c) nom qui contient la requête,
+         d) sinon : artiste le plus populaire.
+    """
+    if not query:
+        return None
+
+    # 1) Cas lien Spotify copie-collé
+    artist_id = _parse_spotify_artist_id_from_query(query)
+    if artist_id:
+        try:
+            return sp.artist(artist_id)
+        except Exception:
+            return None
+
+    # 2) Cas recherche par nom
+    try:
+        res = sp.search(q=query, type="artist", limit=10)
+        items = res.get("artists", {}).get("items", [])
+    except Exception:
+        return None
+
+    if not items:
+        return None
+
+    q_norm = _norm_text(query)
+
+    # a) Nom exact
+    exact_matches = [
+        a for a in items
+        if _norm_text(a.get("name", "")) == q_norm
+    ]
+    if exact_matches:
+        # s'il y en a plusieurs, on prend le plus populaire
+        return sorted(exact_matches, key=lambda a: a.get("popularity", 0), reverse=True)[0]
+
+    # b) Nom qui commence par la requête normalisée
+    startswith_matches = [
+        a for a in items
+        if _norm_text(a.get("name", "")).startswith(q_norm)
+    ]
+    if startswith_matches:
+        return sorted(startswith_matches, key=lambda a: a.get("popularity", 0), reverse=True)[0]
+
+    # c) Nom qui contient la requête normalisée
+    contains_matches = [
+        a for a in items
+        if q_norm in _norm_text(a.get("name", ""))
+    ]
+    if contains_matches:
+        return sorted(contains_matches, key=lambda a: a.get("popularity", 0), reverse=True)[0]
+
+    # d) Fallback : prendre le plus populaire parmi les résultats
+    return sorted(items, key=lambda a: a.get("popularity", 0), reverse=True)[0]
+
+
 def get_any_lyrics(artist_name: str, track_title: str):
     """
     Essaie de récupérer des paroles depuis l'API lyrics.ovh.
     Retourne un string (paroles) ou None.
-    TODO: fallback Genius / scraping si besoin, avec cache.
     """
     try:
-        # On nettoie un peu le titre (enlève les trucs entre parenthèses, versions, etc.)
         clean_title = re.sub(r"\(.*?\)", "", track_title)
         clean_title = clean_title.split("-")[0].strip()
 
@@ -108,12 +184,10 @@ def get_any_lyrics(artist_name: str, track_title: str):
                     return txt.strip()
             return None
 
-        # 1er essai : artiste + titre complet nettoyé
         txt = fetch(artist_name, clean_title)
         if txt:
             return txt
 
-        # 2e essai : juste le nom de famille / mot principal de l’artiste
         short_artist = artist_name.split()[-1]
         txt = fetch(short_artist, clean_title)
         if txt:
@@ -143,7 +217,6 @@ def get_itunes_preview_for_track(artist_name: str, track_title: str):
         if data_it.get("resultCount", 0) == 0:
             return None
 
-        # On essaie de matcher au mieux artiste + titre
         def norm(s):
             return re.sub(r"[^a-z0-9]", "", s.lower())
 
@@ -177,7 +250,6 @@ def get_itunes_preview_for_track(artist_name: str, track_title: str):
 st.title("📊 Artist Performance & Strategy Dashboard")
 st.caption("Prototype data x musique – audit, analyse produit, benchmark et tendances marché.")
 
-# --- Barre latérale : navigation haute-niveau
 st.sidebar.header("Navigation")
 page = st.sidebar.radio(
     "Aller à :",
@@ -206,28 +278,22 @@ with col_btn:
     load_artist = st.button("Charger l'artiste")
 
 if load_artist and query:
-    try:
-        result = sp.search(q=query, type="artist", limit=1)
-
-        if result["artists"]["items"]:
-            artist = result["artists"]["items"][0]
-
-            st.session_state.artist_data = {
-                "id": artist["id"],
-                "name": artist["name"],
-                "genres": artist["genres"],
-                "followers": artist["followers"]["total"],
-                "popularity": artist["popularity"],
-                "image": artist["images"][0]["url"] if artist["images"] else None,
-                "url": artist["external_urls"]["spotify"]
-            }
-
-            st.session_state.artist_loaded = True
-        else:
-            st.warning("Aucun artiste trouvé.")
-    except Exception:
-        st.error("Erreur lors du chargement de l’artiste.")
-
+    artist = search_best_artist(query)
+    if artist is None:
+        st.warning("Aucun artiste pertinent trouvé pour cette requête.")
+        st.session_state.artist_loaded = False
+        st.session_state.artist_data = None
+    else:
+        st.session_state.artist_data = {
+            "id": artist["id"],
+            "name": artist["name"],
+            "genres": artist["genres"],
+            "followers": artist["followers"]["total"],
+            "popularity": artist["popularity"],
+            "image": artist["images"][0]["url"] if artist.get("images") else None,
+            "url": artist["external_urls"]["spotify"]
+        }
+        st.session_state.artist_loaded = True
 
 # =========================================================
 # FONCTIONS DE RENDU PAR PAGE
