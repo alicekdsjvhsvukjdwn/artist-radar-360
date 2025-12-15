@@ -462,17 +462,62 @@ def render_page_audit():
             legend_title_text="Type de sortie"
         )
 
-        # 🔴 ICI : on force les albums en rouge, le reste en gris
+        # 🔴 Albums en rouge, 🔵 singles en bleu clair, le reste en gris
         fig.for_each_trace(
-            lambda trace: trace.update(marker=dict(color="blue", size=8))
-            if trace.name == "album"
-            else trace.update(marker=dict(color="lightblue", size=8))
+            lambda trace: (
+                trace.update(marker=dict(color="red", size=10))
+                if trace.name == "album"
+                else trace.update(marker=dict(color="#66b3ff", size=8))
+                if trace.name == "single"
+                else trace.update(marker=dict(color="lightgray", size=8))
+            )
         )
 
         st.plotly_chart(fig, use_container_width=True)
 
-        # (optionnel) TODO : calculer un rythme moyen de sortie (jours entre releases)
-        # et afficher un indicateur type "1 sortie tous les X jours".
+        # --- RYTHME MOYEN DE SORTIE ------------------------------------------
+        df_sorted = df_timeline.sort_values("Date").copy()
+        df_sorted["delta_days"] = df_sorted["Date"].diff().dt.days
+
+        deltas = df_sorted["delta_days"].dropna()
+
+        if not deltas.empty and (deltas > 0).any():
+            # On enlève les éventuels 0 jours (sorties le même jour)
+            deltas_pos = deltas[deltas > 0]
+
+            if deltas_pos.empty:
+                st.caption(
+                    "Rythme moyen de sortie : toutes les sorties sont le même jour "
+                    "(compilations, rééditions ou dataset limité)."
+                )
+            else:
+                median_gap = float(deltas_pos.median())
+                mean_gap = float(deltas_pos.mean())
+
+                # On prend la médiane comme indicateur principal (plus robuste)
+                jours_par_sortie = int(round(median_gap))
+                sorties_par_an = 365.0 / median_gap if median_gap > 0 else None
+
+                c_gap1, c_gap2 = st.columns(2)
+                c_gap1.metric(
+                    "Rythme moyen de sortie",
+                    f"1 sortie tous les ~{jours_par_sortie} jours"
+                )
+                if sorties_par_an:
+                    c_gap2.metric(
+                        "Sorties estimées / an",
+                        f"{sorties_par_an:.1f}"
+                    )
+
+                st.caption(
+                    f"(Médiane des intervalles entre sorties : {median_gap:.1f} jours ; "
+                    f"moyenne : {mean_gap:.1f} jours.)"
+                )
+        else:
+            st.caption(
+                "Rythme moyen de sortie non calculable (trop peu de sorties ou dates identiques)."
+            )
+
     else:
         st.info("Aucune sortie détectée pour construire une timeline.")
 
