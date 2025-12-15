@@ -392,9 +392,9 @@ def render_page_audit():
 
         # 🔴 ICI : on force les albums en rouge, le reste en gris
         fig.for_each_trace(
-            lambda trace: trace.update(marker=dict(color="red", size=10))
+            lambda trace: trace.update(marker=dict(color="purple", size=8))
             if trace.name == "album"
-            else trace.update(marker=dict(color="lightgray", size=8))
+            else trace.update(marker=dict(color="blue", size=8))
         )
 
         st.plotly_chart(fig, use_container_width=True)
