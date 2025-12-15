@@ -299,15 +299,15 @@ if load_artist and query:
 # FONCTIONS DE RENDU PAR PAGE
 # =========================================================
 
-# -------------------------
+# =========================================================
 # PAGE 1 : L'AUDIT ARTISTE
-# -------------------------
+# =========================================================
 def render_page_audit():
     """
     PAGE 1 – Diagnostic carrière
     1.1 Baromètre de notoriété
-    1.2 Timeline de consistance
-    1.3 Écosystème & perception (à implémenter via Last.fm)
+    1.2 Timeline de consistance (le grind)
+    1.3 Écosystème & perception (TODO Last.fm)
     """
     if not st.session_state.artist_loaded:
         st.info("Commence par charger un·e artiste au-dessus.")
@@ -320,7 +320,7 @@ def render_page_audit():
 
     st.divider()
 
-    # --- Header artiste
+    # --- HEADER ARTISTE ------------------------------------------------------
     col1, col2 = st.columns([1, 3])
     with col1:
         if data["image"]:
@@ -333,20 +333,19 @@ def render_page_audit():
 
     st.divider()
 
-    # 1.1 Baromètre de Notoriété
+    # --- 1.1 BAROMÈTRE DE NOTORIÉTÉ -----------------------------------------
     st.markdown("#### 1.1 Baromètre de notoriété")
     c1, c2, c3 = st.columns(3)
     c1.metric("Popularité Spotify", data["popularity"])
     c2.metric("Followers", f"{data['followers']:,}")
     c3.metric("Nb genres associés", len(data["genres"]))
 
-    st.caption(
-        "👉 Vue rapide pour situer l'artiste : niche, émergent, établi."
-    )
+    st.caption("👉 Vue rapide : niche, émergent ou déjà bien installé·e.")
 
-    # 1.2 Timeline de consistance (sorties)
+    # --- 1.2 TIMELINE DE CONSISTANCE (LE GRIND) ------------------------------
     st.markdown("#### 1.2 Timeline de consistance (le grind)")
 
+    # Récupération des sorties (albums + singles)
     try:
         albums = sp.artist_albums(
             data["id"],
@@ -358,11 +357,15 @@ def render_page_audit():
         albums = {"items": []}
 
     dates, titles, types = [], [], []
-    for item in albums["items"]:
-        if item.get("release_date"):
-            dates.append(item["release_date"])
-            titles.append(item["name"])
-            types.append(item["album_type"])
+
+    for item in albums.get("items", []):
+        release_date = item.get("release_date")
+        if release_date:
+            dates.append(release_date)
+            titles.append(item.get("name", "Sans titre"))
+            # "album_type" vaut typiquement "album" ou "single"
+            album_type = item.get("album_type", "other")
+            types.append(album_type)
 
     if dates:
         df_timeline = pd.DataFrame({
@@ -371,29 +374,42 @@ def render_page_audit():
             "Type": types
         }).sort_values("Date")
 
+        # Scatter 1D : on met tout sur y=1, coloré par type
         fig = px.scatter(
             df_timeline,
             x="Date",
-            y=[1]*len(df_timeline),
+            y=[1] * len(df_timeline),
             color="Type",
             hover_name="Titre",
             labels={"y": ""}
         )
         fig.update_yaxes(visible=False)
-        fig.update_layout(height=220, margin=dict(l=0, r=0, t=30, b=0))
+        fig.update_layout(
+            height=220,
+            margin=dict(l=0, r=0, t=30, b=0),
+            legend_title_text="Type de sortie"
+        )
+
+        # 🔴 ICI : on force les albums en rouge, le reste en gris
+        fig.for_each_trace(
+            lambda trace: trace.update(marker=dict(color="red", size=10))
+            if trace.name == "album"
+            else trace.update(marker=dict(color="lightgray", size=8))
+        )
+
         st.plotly_chart(fig, use_container_width=True)
 
-        # TODO : calculer un "rythme de sortie moyen" (ex: 1 sortie tous les X jours)
+        # (optionnel) TODO : calculer un rythme moyen de sortie (jours entre releases)
+        # et afficher un indicateur type "1 sortie tous les X jours".
     else:
         st.info("Aucune sortie détectée pour construire une timeline.")
 
-    # 1.3 Écosystème & Perception (TODO)
+    # --- 1.3 ÉCOSYSTÈME & PERCEPTION (PLACEHOLDER) --------------------------
     st.markdown("#### 1.3 Écosystème & perception (vibe check)")
     st.info(
-        "TODO : utiliser l'API Last.fm pour récupérer tags (nuage de mots-clés) "
-        "et concurrents proches, puis afficher :\n"
-        "- Nuage de tags (comment le public catégorise l'artiste)\n"
-        "- Liste de 5–10 artistes similaires (concurrence / voisinage)."
+        "TODO :\n"
+        "- Récupérer les tags et artistes similaires via Last.fm\n"
+        "- Afficher un nuage de mots-clés + quelques concurrents directs."
     )
 
 
