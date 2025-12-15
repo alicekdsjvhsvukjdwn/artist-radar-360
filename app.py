@@ -242,6 +242,78 @@ def get_itunes_preview_for_track(artist_name: str, track_title: str):
     except Exception:
         return None
 
+LASTFM_ROOT = "https://ws.audioscrobbler.com/2.0/"
+
+
+def get_lastfm_artist_tags(artist_name: str, limit: int = 20):
+    """
+    Récupère les top tags Last.fm pour un artiste donné.
+    Retourne une liste de dicts [{'name': ..., 'count': ...}, ...]
+    ou une liste vide si rien.
+    """
+    try:
+        params = {
+            "method": "artist.getTopTags",
+            "artist": artist_name,
+            "api_key": LASTFM_KEY,
+            "format": "json",
+            "autocorrect": 1,
+        }
+        resp = requests.get(LASTFM_ROOT, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        tags = data.get("toptags", {}).get("tag", [])
+
+        if not tags:
+            return []
+
+        # Last.fm renvoie parfois un dict quand il n'y a qu'un tag
+        if isinstance(tags, dict):
+            tags = [tags]
+
+        # Trier par count décroissant et limiter
+        tags_sorted = sorted(
+            tags,
+            key=lambda t: int(t.get("count", 0)),
+            reverse=True
+        )
+        return tags_sorted[:limit]
+
+    except Exception:
+        return []
+
+
+def get_lastfm_similar_artists(artist_name: str, limit: int = 10):
+    """
+    Récupère des artistes similaires depuis Last.fm.
+    Retourne une liste de dicts [{'name': ..., 'match': ..., 'url': ...}, ...]
+    ou une liste vide si rien.
+    """
+    try:
+        params = {
+            "method": "artist.getSimilar",
+            "artist": artist_name,
+            "api_key": LASTFM_KEY,
+            "format": "json",
+            "autocorrect": 1,
+            "limit": limit,
+        }
+        resp = requests.get(LASTFM_ROOT, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        similar = data.get("similarartists", {}).get("artist", [])
+
+        if not similar:
+            return []
+
+        if isinstance(similar, dict):
+            similar = [similar]
+
+        return similar[:limit]
+
+    except Exception:
+        return []
+
 
 # =========================================================
 # UI GLOBALE : TITRE + BARRE LATERALE
@@ -392,7 +464,7 @@ def render_page_audit():
 
         # 🔴 ICI : on force les albums en rouge, le reste en gris
         fig.for_each_trace(
-            lambda trace: trace.update(marker=dict(color="purple", size=8))
+            lambda trace: trace.update(marker=dict(color="blue", size=8))
             if trace.name == "album"
             else trace.update(marker=dict(color="lightblue", size=8))
         )
@@ -404,13 +476,93 @@ def render_page_audit():
     else:
         st.info("Aucune sortie détectée pour construire une timeline.")
 
-    # --- 1.3 ÉCOSYSTÈME & PERCEPTION (PLACEHOLDER) --------------------------
+    # --- 1.3 ÉCOSYSTÈME & PERCEPTION (VIBE CHECK) --------------------------
     st.markdown("#### 1.3 Écosystème & perception (vibe check)")
-    st.info(
-        "TODO :\n"
-        "- Récupérer les tags et artistes similaires via Last.fm\n"
-        "- Afficher un nuage de mots-clés + quelques concurrents directs."
+
+    artist_name = data["name"]
+
+    # Récupération Last.fm
+    tags = get_lastfm_artist_tags(artist_name, limit=15)
+    similar = get_lastfm_similar_artists(artist_name, limit=8)
+
+    if not tags and not similar:
+        st.info(
+            "Aucune donnée exploitable trouvée sur Last.fm pour cet artiste "
+            "(peu ou pas de tags / artistes similaires)."
+        )
+        return
+
+    col_tags, col_sim = st.columns(2)
+
+    # ----- Nuage de tags (version bar chart horizontale) --------------------
+    with col_tags:
+        st.markdown("**Nuage de tags Last.fm (perception du public)**")
+
+        if tags:
+            df_tags = pd.DataFrame({
+                "Tag": [t.get("name", "") for t in tags],
+                "Poids": [int(t.get("count", 0)) for t in tags],
+            })
+
+            # On affiche les tags les plus forts en haut
+            df_tags_sorted = df_tags.sort_values("Poids", ascending=True)
+
+            fig_tags = px.bar(
+                df_tags_sorted,
+                x="Poids",
+                y="Tag",
+                orientation="h",
+            )
+            fig_tags.update_layout(
+                height=300,
+                margin=dict(l=0, r=0, t=30, b=0)
+            )
+            st.plotly_chart(fig_tags, use_container_width=True)
+
+            top_labels = ", ".join(
+                df_tags.sort_values("Poids", ascending=False)["Tag"].head(5)
+            )
+            st.caption(f"🧠 Comment le public le catégorise : {top_labels}")
+        else:
+            st.info("Aucun tag significatif trouvé pour cet artiste sur Last.fm.")
+
+    # ----- Artistes similaires (liste) --------------------------------------
+    with col_sim:
+        st.markdown("**Artistes similaires (voisinage Last.fm)**")
+
+        if similar:
+            sim_names = [a.get("name", "") for a in similar]
+            sim_match = [float(a.get("match", 0)) for a in similar]
+            sim_urls = [a.get("url", "") for a in similar]
+
+            df_sim = pd.DataFrame({
+                "Artiste": sim_names,
+                "Similarité": sim_match,
+                "Lien": sim_urls,
+            })
+
+            # On n'affiche que nom + similarité, lien cliquable dans un tableau markdown simple
+            st.dataframe(
+                df_sim[["Artiste", "Similarité"]],
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            # petite liste de liens en dessous
+            st.markdown("Artistes à explorer :")
+            for name, url in zip(sim_names, sim_urls):
+                if url:
+                    st.markdown(f"- [{name}]({url})")
+                else:
+                    st.markdown(f"- {name}")
+        else:
+            st.info("Pas assez de données Last.fm pour lister des artistes similaires.")
+
+    st.caption(
+        "👉 À lire comme : est-ce que ces tags/voisins collent à l'image que l'artiste revendique "
+        "et aux genres Spotify affichés plus haut ?"
     )
+
 
 
 # -----------------------------------
