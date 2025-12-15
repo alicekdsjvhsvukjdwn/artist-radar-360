@@ -74,6 +74,15 @@ except Exception:
 # FONCTIONS UTILITAIRES GLOBALES
 # =========================================================
 
+@st.cache_data
+def load_spotify_dataset():
+    """
+    Charge le dataset local de tracks avec audio features.
+    Adapter le chemin si ton fichier a un autre nom.
+    """
+    df = pd.read_csv("data/spotify_tracks.csv")
+    return df
+
 def _norm_text(s: str) -> str:
     """Normalise un texte pour comparer les noms (minuscules, sans accents, sans caractères spéciaux)."""
     if not s:
@@ -781,147 +790,143 @@ def render_page_labo():
     else:
         st.info("Données insuffisantes pour calculer la dissonance (audio ou texte manquant).")
 
-
 # -------------------------------------
-# PAGE 3 : LE COMPARATEUR (BENCHMARKING)
+# PAGE 3 : LE COMPARATEUR (DATASET OFFLINE)
 # -------------------------------------
 def render_page_comparateur():
     """
-    PAGE 3 – Comparateur & benchmarking
-    3.1 Radar de compétitivité (ton titre vs moyenne du style)
-    3.2 Diagnostic automatique (phrases conseils)
-    TODO: ajouter plus tard un vrai comparatif multi-artistes / multi-tracks.
+    Version offline : comparaison d'un titre à la moyenne de son style
+    en utilisant le dataset Kaggle local qui contient déjà les audio features.
     """
-    if not st.session_state.artist_loaded:
-        st.info("Charge d’abord un·e artiste pour accéder au comparateur.")
-        return
-
     st.markdown("### 📄 PAGE 3 – LE COMPARATEUR")
-    st.caption("Situer un titre par rapport aux codes statistiques d'un style.")
+    st.caption("Comparer un titre à la moyenne statistique de son style à partir d'un dataset local (Spotify Tracks Dataset).")
 
-    st.markdown("#### 🎯 Comparer un titre à un style")
+    # Charger le dataset
+    df = load_spotify_dataset()
 
-    col_left, col_mid, col_right = st.columns([3, 2, 1])
+    # === NOMS DE COLONNES DU DATASET KAGGLE ===
+    COL_TRACK = "track_name"
+    COL_ARTIST = "artists"
+    COL_GENRE = "track_genre"
+    COL_ENERGY = "energy"
+    COL_DANCE = "danceability"
+    COL_VALENCE = "valence"
+    COL_ACOUSTIC = "acousticness"
+    COL_LOUDNESS = "loudness"
+    COL_DURATION = "duration_ms"
+    COL_POP = "popularity"
 
-    with col_left:
-        track_query = st.text_input(
-            "Titre de référence",
-            value="",
-            placeholder="Ex : Angèle – Balance ton quoi",
-            key="ctx_track_query"
-        )
+    # ----------------- 3.1 Sélection du titre de référence -----------------
+    st.markdown("#### 🎯 3.1 Choisir un titre de référence dans le dataset")
 
-    with col_mid:
-        genre_query = st.text_input(
-            "Style / scène ciblée",
-            value="",
-            placeholder="Ex : french pop, pop, techno, rap français...",
-            key="ctx_genre_query"
-        )
-
-    with col_right:
-        st.write("")
-        st.write("")
-        btn_compare = st.button("Analyser le contexte")
-
-    if not btn_compare:
-        return
-
-    # Vérifs basiques
-    if not track_query or not genre_query:
-        st.warning("Remplis le **titre de référence** et le **style ciblé**.")
-        return
-
-    # 3.1 Titre de référence
-    res_track = sp.search(q=track_query, type="track", limit=1, market="FR")
-    items = res_track.get("tracks", {}).get("items", [])
-    if not items:
-        st.error("Titre introuvable sur Spotify. Essaie un format `Artiste – Titre` ou un autre morceau.")
-        return
-
-    my_track = items[0]
-
-    try:
-        feats_list = sp.audio_features([my_track["id"]])
-        my_features = feats_list[0] if feats_list and feats_list[0] else None
-    except Exception:
-        my_features = None
-
-    if my_features is None:
-        st.error("Spotify ne fournit pas d’Audio Features pour ce titre de référence.")
-        return
-
-    # 3.2 Paysage du style (titres de comparaison)
-    res_genre = sp.search(
-        q=f'genre:"{genre_query}"',
-        type="track",
-        limit=50,
-        market="FR"
+    track_query = st.text_input(
+        "Recherche (titre ou artiste) :",
+        placeholder="Tape un bout de titre ou de nom d'artiste (ex : 'Travis', 'Drake', 'Eminem')",
+        key="offline_track_query"
     )
-    genre_items = res_genre.get("tracks", {}).get("items", [])
 
-    # Fallback : recherche libre si genre précis ne marche pas
-    if not genre_items:
-        res_genre_free = sp.search(
-            q=genre_query,
-            type="track",
-            limit=50,
-            market="FR"
-        )
-        genre_items = res_genre_free.get("tracks", {}).get("items", [])
-
-    if not genre_items:
-        st.error(
-            f"Aucun titre trouvé pour le style '{genre_query}'. "
-            "Essaie un terme plus simple (ex : 'pop', 'trap', 'house', 'rap français')."
-        )
+    if not track_query.strip():
+        st.info("Commence par taper un bout de titre ou d'artiste pour filtrer le dataset.")
         return
 
-    genre_ids = [t["id"] for t in genre_items]
+    # Filtrage simple : titre OU artiste contient la requête
+    mask = (
+        df[COL_TRACK].str.contains(track_query, case=False, na=False) |
+        df[COL_ARTIST].str.contains(track_query, case=False, na=False)
+    )
+    results = df[mask].copy()
 
-    try:
-        genre_features_raw = sp.audio_features(genre_ids)
-        genre_features = [f for f in genre_features_raw if f]
-    except Exception:
-        genre_features = []
-
-    if not genre_features:
-        st.error("Spotify ne fournit pas d’Audio Features pour les titres de ce style.")
+    if results.empty:
+        st.warning("Aucun titre trouvé dans le dataset pour cette requête.")
         return
 
-    df_genre = pd.DataFrame(genre_features)
+    # Pour ne pas exploser l'UI : limiter à 50
+    if len(results) > 50:
+        results = results.head(50)
 
-    # 3.3 Radar de compétitivité
-    st.subheader("🕸️ Radar de compétitivité")
+    # Créer un label lisible
+    def make_label(row):
+        name = str(row[COL_TRACK])
+        artist = str(row[COL_ARTIST])
+        genre = str(row[COL_GENRE])
+        return f"{name} – {artist} [{genre}]"
 
+    options = results.index.tolist()
+    labels = {idx: make_label(results.loc[idx]) for idx in options}
+
+    selected_idx = st.selectbox(
+        "Sélectionne ton titre dans la liste :",
+        options=options,
+        format_func=lambda idx: labels[idx],
+        key="offline_track_select"
+    )
+
+    my_row = results.loc[selected_idx]
+
+    st.markdown(
+        f"**Titre sélectionné :** {my_row[COL_TRACK]} – {my_row[COL_ARTIST]}  "
+        f"(genre détecté : `{my_row[COL_GENRE]}`)"
+    )
+
+    st.divider()
+
+    # ----------------- 3.2 Style / scène de référence -----------------
+    st.markdown("#### 🎨 3.2 Style / scène de référence")
+
+    default_genre = my_row[COL_GENRE]
+
+    # Liste de genres possibles
+    genres_unique = sorted(df[COL_GENRE].dropna().unique().tolist())
+
+    selected_genre = st.selectbox(
+        "Choisis le style de référence (pour la moyenne) :",
+        options=genres_unique,
+        index=genres_unique.index(default_genre) if default_genre in genres_unique else 0,
+        key="offline_genre_select"
+    )
+
+    df_style = df[df[COL_GENRE] == selected_genre].copy()
+
+    if df_style.empty:
+        st.warning("Aucun morceau dans le dataset pour ce style de référence.")
+        return
+
+    st.caption(f"{len(df_style)} titres trouvés dans le dataset pour le style `{selected_genre}`.")
+
+    st.divider()
+
+    # ----------------- 3.3 Radar de compétitivité -----------------
+    st.markdown("#### 🕸️ 3.3 Radar de compétitivité")
+
+    # Moyennes du style
     avg_stats = {
-        "Énergie": float(df_genre["energy"].mean()),
-        "Dansabilité": float(df_genre["danceability"].mean()),
-        "Valence": float(df_genre["valence"].mean()),
-        "Acoustique": float(df_genre["acousticness"].mean()),
-        "Puissance (Loudness)": float((df_genre["loudness"].mean() + 60) / 60),
+        "Énergie": float(df_style[COL_ENERGY].mean()),
+        "Dansabilité": float(df_style[COL_DANCE].mean()),
+        "Valence": float(df_style[COL_VALENCE].mean()),
+        "Acoustique": float(df_style[COL_ACOUSTIC].mean()),
+        # Normalisation simple de la loudness sur [-60, 0] → [0, 1]
+        "Puissance (Loudness)": float((df_style[COL_LOUDNESS].mean() + 60) / 60),
     }
 
+    # Stats de TON titre
     my_stats = {
-        "Énergie": float(my_features["energy"]),
-        "Dansabilité": float(my_features["danceability"]),
-        "Valence": float(my_features["valence"]),
-        "Acoustique": float(my_features["acousticness"]),
-        "Puissance (Loudness)": float((my_features["loudness"] + 60) / 60),
+        "Énergie": float(my_row[COL_ENERGY]),
+        "Dansabilité": float(my_row[COL_DANCE]),
+        "Valence": float(my_row[COL_VALENCE]),
+        "Acoustique": float(my_row[COL_ACOUSTIC]),
+        "Puissance (Loudness)": float((my_row[COL_LOUDNESS] + 60) / 60),
     }
 
     categories = list(avg_stats.keys())
 
     fig = go.Figure()
-
     fig.add_trace(go.Scatterpolar(
         r=list(avg_stats.values()),
         theta=categories,
         fill='toself',
-        name=f"Moyenne '{genre_query}'",
+        name=f"Moyenne '{selected_genre}'",
         opacity=0.4
     ))
-
     fig.add_trace(go.Scatterpolar(
         r=list(my_stats.values()),
         theta=categories,
@@ -938,57 +943,64 @@ def render_page_comparateur():
 
     c_info, c_chart = st.columns([1, 2])
     with c_info:
-        if my_track.get("album", {}).get("images"):
-            st.image(my_track["album"]["images"][0]["url"], width=140)
-        st.markdown(f"**{my_track['name']}**")
-        st.caption(my_track["artists"][0]["name"])
-        st.metric("Popularité du titre", f"{my_track['popularity']}/100")
+        # Popularité dans le dataset
+        try:
+            my_pop = float(my_row[COL_POP])
+            avg_pop = float(df_style[COL_POP].mean())
+        except Exception:
+            my_pop = None
+            avg_pop = None
 
-        avg_pop = sum(t["popularity"] for t in genre_items) / len(genre_items)
-        st.metric(f"Popularité moyenne du style", f"{int(avg_pop)}/100")
+        if my_pop is not None:
+            st.metric("Popularité (dataset)", f"{my_pop:.0f}/100")
+        if avg_pop is not None:
+            st.metric(f"Popularité moyenne du style", f"{avg_pop:.0f}/100")
 
     with c_chart:
         st.plotly_chart(fig, use_container_width=True)
 
-    # 3.4 Diagnostic automatisé
-    st.subheader("💡 Diagnostic automatisé")
+    st.divider()
+
+    # ----------------- 3.4 Diagnostic automatique -----------------
+    st.markdown("#### 💡 3.4 Diagnostic automatique")
 
     msgs = []
 
     # Durée
-    avg_duration = df_genre["duration_ms"].mean() / 1000
-    my_duration = my_features["duration_ms"] / 1000
+    avg_duration = df_style[COL_DURATION].mean() / 1000
+    my_duration = my_row[COL_DURATION] / 1000
     diff_dur = my_duration - avg_duration
 
     if diff_dur > 30:
         msgs.append(
-            f"⏱️ Ton titre est **long** ({int(my_duration)}s) "
-            f"vs moyenne du style ({int(avg_duration)}s). "
-            "Tu peux envisager de raccourcir l’intro ou la fin."
+            f"⏱️ Ton titre est **plus long** que la moyenne du style "
+            f"({int(my_duration)}s vs {int(avg_duration)}s). "
+            "Tu peux envisager de raccourcir l'intro ou la fin."
         )
     elif diff_dur < -30:
         msgs.append(
-            f"⏱️ Ton titre est **court** ({int(my_duration)}s). "
-            "C’est intéressant pour le replay, mais vérifie que la narration est complète."
+            f"⏱️ Ton titre est **plus court** que la moyenne du style "
+            f"({int(my_duration)}s vs {int(avg_duration)}s). "
+            "C'est intéressant pour le replay, mais vérifie que la narration est complète."
         )
 
     # Énergie
     if my_stats["Énergie"] < avg_stats["Énergie"] - 0.15:
         msgs.append(
             "⚡ Énergie en-dessous de la moyenne du style. "
-            "Si tu vises la scène / TikTok, regarde la dynamique (drums, transients, saturation)."
+            "Si tu vises la scène / réseaux, regarde la dynamique (drums, transients, saturation)."
         )
     elif my_stats["Énergie"] > avg_stats["Énergie"] + 0.15:
         msgs.append(
             "⚡ Titre plus énergique que la moyenne. "
-            "Ça peut te démarquer, mais attention à la fatigue d’écoute."
+            "Ça peut te démarquer, mais attention à la fatigue d'écoute."
         )
 
     # Dansabilité
     if my_stats["Dansabilité"] < avg_stats["Dansabilité"] - 0.15:
         msgs.append(
             "💃 Groove moins dansant que la moyenne. "
-            "Si tu vises clubs / réseaux, check pattern de drums, basse, placement rythmique."
+            "Check les patterns de drums, la basse et le placement rythmique."
         )
 
     # Valence (mood)
@@ -1005,8 +1017,8 @@ def render_page_comparateur():
 
     if not msgs:
         st.success(
-            "Ton titre est globalement aligné avec les codes du style. "
-            "Tu peux te permettre d’expérimenter sur d’autres dimensions (structure, texte, visuel)."
+            "Ton titre est globalement aligné avec les codes statistiques du style. "
+            "Tu peux te permettre d'expérimenter sur d'autres dimensions (structure, texte, visuel)."
         )
     else:
         for m in msgs:
