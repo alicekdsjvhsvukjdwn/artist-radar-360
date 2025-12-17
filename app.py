@@ -74,6 +74,81 @@ except Exception:
 # FONCTIONS UTILITAIRES GLOBALES
 # =========================================================
 
+def interpret_spotify_popularity(score: int):
+    """
+    Donne une étiquette lisible pour un score de popularité artiste Spotify.
+    Heuristique simple sur 0-100.
+    """
+    if score is None:
+        return "Inconnu", "Pas assez de données pour estimer la popularité."
+    if score < 15:
+        return "Sous les radars", "Profil très early, quasi invisible pour l’algorithme."
+    elif score < 25:
+        return "Émergent", "Commence à apparaître, mais encore peu de traction régulière."
+    elif score < 50:
+        return "En construction", "Base d’audience réelle, croissance possible si bien accompagnée."
+    elif score < 75:
+        return "En plein buzz", "Artiste bien installé·e, bon potentiel playlists & algorithme."
+    else:
+        return "Star / très établi", "Très forte traction, forte visibilité dans l’écosystème Spotify."
+
+
+def interpret_genre_clarity(genres: list[str]):
+    """
+    Prend la liste de genres Spotify et renvoie (label, commentaire).
+    On veut qualifier la clarté du positionnement.
+    """
+    n = len(genres or [])
+    if n == 0:
+        return "Aucun", "Spotify n’a pas encore assez de données pour catégoriser l’artiste."
+    if n <= 2:
+        return "Très ciblé", "Positionnement clair : une scène principale bien identifiée."
+    elif n <= 5:
+        return "Segmenté", "Quelques sous-genres, l’artiste navigue dans un même univers global."
+    else:
+        return "Éclaté", (
+            "Beaucoup de micro-genres : soit l’artiste est très hybride, "
+            "soit le positionnement perçu est flou."
+        )
+
+
+@st.cache_data
+def enrich_similar_with_spotify(similar_list):
+    """
+    Prend la liste Last.fm d'artistes similaires
+    et renvoie un DataFrame avec :
+    - Artiste
+    - Similarité_Lastfm
+    - Popularité_Spotify
+    - Followers_Spotify
+    """
+    rows = []
+    for a in similar_list:
+        name = a.get("name", "")
+        match = float(a.get("match", 0) or 0.0)
+        if not name:
+            continue
+
+        sp_artist = search_best_artist(name)
+        if sp_artist is None:
+            rows.append({
+                "Artiste": name,
+                "Similarité_Lastfm": match,
+                "Popularité_Spotify": None,
+                "Followers_Spotify": None,
+            })
+        else:
+            rows.append({
+                "Artiste": name,
+                "Similarité_Lastfm": match,
+                "Popularité_Spotify": sp_artist.get("popularity"),
+                "Followers_Spotify": sp_artist.get("followers", {}).get("total"),
+            })
+
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows)
+
 @st.cache_data
 def load_spotify_dataset():
     """
@@ -388,7 +463,7 @@ def render_page_audit():
     PAGE 1 – Diagnostic carrière
     1.1 Baromètre de notoriété
     1.2 Timeline de consistance (le grind)
-    1.3 Écosystème & perception (TODO Last.fm)
+    1.3 Écosystème & perception (Last.fm + voisins Spotify)
     """
     if not st.session_state.artist_loaded:
         st.info("Commence par charger un·e artiste au-dessus.")
@@ -416,12 +491,21 @@ def render_page_audit():
 
     # --- 1.1 BAROMÈTRE DE NOTORIÉTÉ -----------------------------------------
     st.markdown("#### 1.1 Baromètre de notoriété")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Popularité Spotify", data["popularity"])
-    c2.metric("Followers", f"{data['followers']:,}")
-    c3.metric("Nb genres associés", len(data["genres"]))
 
-    st.caption("👉 Vue rapide : niche, émergent ou déjà bien installé·e.")
+    pop_score = data["popularity"]
+    pop_label, pop_comment = interpret_spotify_popularity(pop_score)
+    genre_label, genre_comment = interpret_genre_clarity(data["genres"])
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Popularité Spotify (0-100)", pop_score, help=pop_comment)
+    c2.metric("Followers", f"{data['followers']:,}")
+    c3.metric("Positionnement genres", genre_label, help=genre_comment)
+
+    st.caption(
+        "📌 Lecture rapide : "
+        f"{pop_label.lower()} – score basé surtout sur les écoutes récentes, "
+        "le volume de streams et l’engagement dans Spotify."
+    )
 
     # --- 1.2 TIMELINE DE CONSISTANCE (LE GRIND) ------------------------------
     st.markdown("#### 1.2 Timeline de consistance (le grind)")
@@ -437,25 +521,26 @@ def render_page_audit():
     except Exception:
         albums = {"items": []}
 
-    dates, titles, types = [], [], []
+    dates, titles, types, total_tracks_list = [], [], [], []
 
     for item in albums.get("items", []):
         release_date = item.get("release_date")
         if release_date:
             dates.append(release_date)
             titles.append(item.get("name", "Sans titre"))
-            # "album_type" vaut typiquement "album" ou "single"
-            album_type = item.get("album_type", "other")
+            album_type = item.get("album_type", "other")  # "album" / "single"
             types.append(album_type)
+            total_tracks_list.append(item.get("total_tracks", 1) or 1)
 
     if dates:
         df_timeline = pd.DataFrame({
             "Date": pd.to_datetime(dates),
             "Titre": titles,
-            "Type": types
+            "Type": types,
+            "Nb_pistes": total_tracks_list,
         }).sort_values("Date")
 
-        # Scatter 1D : on met tout sur y=1, coloré par type
+        # Scatter 1D : y=1, coloré par type (album / single)
         fig = px.scatter(
             df_timeline,
             x="Date",
@@ -484,10 +569,19 @@ def render_page_audit():
 
         st.plotly_chart(fig, use_container_width=True)
 
+        # Stats sur les objets de sortie
+        nb_singles = (df_timeline["Type"] == "single").sum()
+        nb_albums = (df_timeline["Type"] == "album").sum()
+        total_tracks = int(df_timeline["Nb_pistes"].sum())
+
+        c_obj1, c_obj2, c_obj3 = st.columns(3)
+        c_obj1.metric("Singles recensés", nb_singles)
+        c_obj2.metric("Albums recensés", nb_albums)
+        c_obj3.metric("Titres estimés (pistes d'albums + singles)", total_tracks)
+
         # --- RYTHME MOYEN DE SORTIE ------------------------------------------
         df_sorted = df_timeline.sort_values("Date").copy()
         df_sorted["delta_days"] = df_sorted["Date"].diff().dt.days
-
         deltas = df_sorted["delta_days"].dropna()
 
         if not deltas.empty and (deltas > 0).any():
@@ -503,11 +597,17 @@ def render_page_audit():
                 median_gap = float(deltas_pos.median())
                 mean_gap = float(deltas_pos.mean())
 
-                # On prend la médiane comme indicateur principal (plus robuste)
                 jours_par_sortie = int(round(median_gap))
                 sorties_par_an = 365.0 / median_gap if median_gap > 0 else None
 
-                c_gap1, c_gap2 = st.columns(2)
+                # Période couverte
+                date_min = df_sorted["Date"].min()
+                date_max = df_sorted["Date"].max()
+                nb_days_range = (date_max - date_min).days or 1
+                nb_years_range = nb_days_range / 365.0
+                tracks_per_year = total_tracks / nb_years_range if nb_years_range > 0 else None
+
+                c_gap1, c_gap2, c_gap3 = st.columns(3)
                 c_gap1.metric(
                     "Rythme moyen de sortie",
                     f"1 sortie tous les ~{jours_par_sortie} jours"
@@ -517,10 +617,15 @@ def render_page_audit():
                         "Sorties estimées / an",
                         f"{sorties_par_an:.1f}"
                     )
+                if tracks_per_year:
+                    c_gap3.metric(
+                        "Titres estimés / an",
+                        f"{tracks_per_year:.1f}"
+                    )
 
                 st.caption(
                     f"(Médiane des intervalles entre sorties : {median_gap:.1f} jours ; "
-                    f"moyenne : {mean_gap:.1f} jours.)"
+                    f"moyenne : {mean_gap:.1f} jours ; période analysée ~{nb_years_range:.1f} ans.)"
                 )
         else:
             st.caption(
@@ -530,7 +635,7 @@ def render_page_audit():
     else:
         st.info("Aucune sortie détectée pour construire une timeline.")
 
-    # --- 1.3 ÉCOSYSTÈME & PERCEPTION (VIBE CHECK) --------------------------
+    # --- 1.3 ÉCOSYSTÈME & PERCEPTION (VIBE CHECK) ---------------------------
     st.markdown("#### 1.3 Écosystème & perception (vibe check)")
 
     artist_name = data["name"]
@@ -548,7 +653,7 @@ def render_page_audit():
 
     col_tags, col_sim = st.columns(2)
 
-    # ----- Nuage de tags (version bar chart horizontale) --------------------
+    # ----- Nuage de tags (bar chart horizontale) ----------------------------
     with col_tags:
         st.markdown("**Nuage de tags Last.fm (perception du public)**")
 
@@ -558,7 +663,6 @@ def render_page_audit():
                 "Poids": [int(t.get("count", 0)) for t in tags],
             })
 
-            # On affiche les tags les plus forts en haut
             df_tags_sorted = df_tags.sort_values("Poids", ascending=True)
 
             fig_tags = px.bar(
@@ -580,35 +684,56 @@ def render_page_audit():
         else:
             st.info("Aucun tag significatif trouvé pour cet artiste sur Last.fm.")
 
-    # ----- Artistes similaires (liste) --------------------------------------
+    # ----- Artistes similaires enrichis -------------------------------------
     with col_sim:
-        st.markdown("**Artistes similaires (voisinage Last.fm)**")
+        st.markdown("**Artistes similaires (voisinage Last.fm x Spotify)**")
 
         if similar:
-            sim_names = [a.get("name", "") for a in similar]
-            sim_match = [float(a.get("match", 0)) for a in similar]
-            sim_urls = [a.get("url", "") for a in similar]
+            df_sim = enrich_similar_with_spotify(similar)
 
-            df_sim = pd.DataFrame({
-                "Artiste": sim_names,
-                "Similarité": sim_match,
-                "Lien": sim_urls,
-            })
+            if df_sim.empty:
+                st.info("Pas assez de données pour enrichir les artistes similaires.")
+            else:
+                st.dataframe(
+                    df_sim[["Artiste", "Similarité_Lastfm", "Popularité_Spotify", "Followers_Spotify"]],
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
-            # On n'affiche que nom + similarité, lien cliquable dans un tableau markdown simple
-            st.dataframe(
-                df_sim[["Artiste", "Similarité"]],
-                use_container_width=True,
-                hide_index=True,
-            )
+                df_plot = df_sim.dropna(
+                    subset=["Popularité_Spotify", "Followers_Spotify"]
+                ).copy()
 
-            # petite liste de liens en dessous
-            st.markdown("Artistes à explorer :")
-            for name, url in zip(sim_names, sim_urls):
-                if url:
-                    st.markdown(f"- [{name}]({url})")
-                else:
-                    st.markdown(f"- {name}")
+                if not df_plot.empty:
+                    fig_sim = px.scatter(
+                        df_plot,
+                        x="Followers_Spotify",
+                        y="Popularité_Spotify",
+                        hover_name="Artiste",
+                        size="Similarité_Lastfm",
+                        title="Positionnement des voisins (Spotify)",
+                    )
+                    fig_sim.update_xaxes(type="log", title="Followers (log)")
+                    fig_sim.update_yaxes(title="Popularité Spotify (0-100)")
+                    st.plotly_chart(fig_sim, use_container_width=True)
+
+                    my_pop = data["popularity"]
+                    my_followers = data["followers"]
+                    avg_pop_neighbors = df_plot["Popularité_Spotify"].mean()
+                    avg_follow_neighbors = df_plot["Followers_Spotify"].mean()
+
+                    st.caption(
+                        f"Artiste analysé·e : {my_followers:,} followers, popularité {my_pop} "
+                        f"vs moyenne voisins ≈ {int(avg_follow_neighbors):,} followers "
+                        f"et {avg_pop_neighbors:.1f} de popularité."
+                    )
+
+                st.markdown("**Idées d’usage :**")
+                st.markdown(
+                    "- Cibles de featuring réalistes (voisinage direct).\n"
+                    "- Playlists / médias qui programment déjà ces artistes.\n"
+                    "- Publicités ciblées sur les audiences de ces voisins (lookalike)."
+                )
         else:
             st.info("Pas assez de données Last.fm pour lister des artistes similaires.")
 
@@ -616,8 +741,6 @@ def render_page_audit():
         "👉 À lire comme : est-ce que ces tags/voisins collent à l'image que l'artiste revendique "
         "et aux genres Spotify affichés plus haut ?"
     )
-
-
 
 # -----------------------------------
 # PAGE 2 : LE LABO D'ANALYSE (PRODUIT)
