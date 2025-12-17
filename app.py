@@ -404,15 +404,56 @@ def search_best_artist(query: str):
     return sorted(items, key=lambda a: a.get("popularity", 0), reverse=True)[0]
 
 
+def _clean_track_title_for_lyrics(title: str) -> str:
+    """
+    Nettoie un titre pour les requêtes paroles :
+    - enlève les parenthèses (Radio Edit, Remix…)
+    - coupe après un '-'
+    """
+    if not title:
+        return ""
+    t = re.sub(r"\(.*?\)", "", title)   # supprime (...) 
+    t = t.split(" - ")[0]               # coupe après " - "
+    return t.strip()
+
+
+def _clean_lyrics_text(txt: str) -> str:
+    """
+    Nettoie un texte de paroles brut (Genius) :
+    - enlève les blocs type 'Embed' à la fin
+    """
+    if not txt:
+        return ""
+    # beaucoup de paroles Genius finissent par '123Embed'
+    txt = re.split(r"\n?\d*\s*Embed$", txt)[0]
+    return txt.strip()
+
+
 def get_any_lyrics(artist_name: str, track_title: str):
     """
-    Essaie de récupérer des paroles depuis l'API lyrics.ovh.
+    Essaie de récupérer des paroles pour (artiste, titre).
+
+    Ordre :
+    1) API Genius (lyricsgenius) – meilleure couverture.
+    2) API lyrics.ovh – fallback simple.
     Retourne un string (paroles) ou None.
     """
-    try:
-        clean_title = re.sub(r"\(.*?\)", "", track_title)
-        clean_title = clean_title.split("-")[0].strip()
+    clean_title = _clean_track_title_for_lyrics(track_title)
 
+    # ---------- 1) Tentative via GENIUS ----------
+    try:
+        # on laisse Genius gérer le fuzzy matching
+        song = genius.search_song(title=clean_title, artist=artist_name)
+        if song and song.lyrics:
+            txt = _clean_lyrics_text(song.lyrics)
+            if txt:
+                return txt
+    except Exception:
+        # on ne casse pas l'app si Genius rate
+        pass
+
+    # ---------- 2) Fallback lyrics.ovh ----------
+    try:
         def fetch(a, t):
             url = f"https://api.lyrics.ovh/v1/{quote(a)}/{quote(t)}"
             resp = requests.get(url, timeout=10)
@@ -427,6 +468,7 @@ def get_any_lyrics(artist_name: str, track_title: str):
         if txt:
             return txt
 
+        # tentative avec juste le dernier mot du nom d'artiste
         short_artist = artist_name.split()[-1]
         txt = fetch(short_artist, clean_title)
         if txt:
@@ -435,8 +477,8 @@ def get_any_lyrics(artist_name: str, track_title: str):
     except Exception:
         pass
 
+    # ---------- Rien trouvé ----------
     return None
-
 
 def get_itunes_preview_for_track(artist_name: str, track_title: str):
     """
