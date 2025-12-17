@@ -11,7 +11,7 @@ import numpy as np
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
 import requests
-import lyricsgenius
+# import lyricsgenius
 
 # Audio / NLP
 import librosa
@@ -60,10 +60,10 @@ try:
             client_secret=st.secrets["SPOTIPY_CLIENT_SECRET"]
         )
     )
-    genius = lyricsgenius.Genius(
+    """ genius = lyricsgenius.Genius(
         st.secrets["GENIUS_ACCESS_TOKEN"],
         verbose=False
-    )
+    ) """
     LASTFM_KEY = st.secrets["LASTFM_API_KEY"]
 except Exception:
     st.error("Erreur de configuration API (Spotify / Genius / Last.fm). Vérifie les secrets.")
@@ -431,66 +431,40 @@ def _clean_lyrics_text(txt: str) -> str:
 
 def get_any_lyrics(artist_name: str, track_title: str):
     """
-    Essaie de récupérer des paroles pour (artiste, titre).
-
-    Ordre :
-    1) API Genius (lyricsgenius)
-    2) API lyrics.ovh
+    Essaie de récupérer des paroles pour (artiste, titre) via lyrics.ovh uniquement.
     Retourne un string (paroles) ou None.
     """
     clean_title = _clean_track_title_for_lyrics(track_title)
-    st.write("DEBUG LYRICS — artiste:", artist_name, "| titre brut:", track_title, "| titre clean:", clean_title)
+    st.write("DEBUG LYRICS — artiste:", artist_name, "| titre clean:", clean_title)
 
-    # ---------- 1) Tentative via GENIUS ----------
-    try:
-        st.write("DEBUG LYRICS — appel Genius.search_song(...)")
-        song = genius.search_song(clean_title, artist_name)  # arguments positionnels
-
-        if song is None:
-            st.write("DEBUG LYRICS — Genius n’a rien trouvé (song is None).")
+    def fetch(a, t, label=""):
+        url = f"https://api.lyrics.ovh/v1/{quote(a)}/{quote(t)}"
+        st.write(f"DEBUG LYRICS — appel lyrics.ovh {label} :", url)
+        resp = requests.get(url, timeout=10)
+        st.write("DEBUG LYRICS — status code lyrics.ovh :", resp.status_code)
+        if resp.status_code == 200:
+            data = resp.json()
+            txt = data.get("lyrics")
+            if txt and "No lyrics found" not in txt:
+                txt = txt.strip()
+                st.write("DEBUG LYRICS — longueur paroles lyrics.ovh :", len(txt))
+                return txt
+            else:
+                st.write("DEBUG LYRICS — lyrics.ovh a répondu mais sans paroles utiles.")
         else:
-            st.write("DEBUG LYRICS — Genius a renvoyé :", repr(getattr(song, "title", None)))
-            if song.lyrics:
-                txt = _clean_lyrics_text(song.lyrics)
-                st.write("DEBUG LYRICS — Longueur paroles Genius :", len(txt))
-                if txt:
-                    return txt
-            else:
-                st.write("DEBUG LYRICS — song.lyrics est vide.")
-    except Exception as e:
-        st.write("DEBUG LYRICS — ERREUR Genius :", repr(e))
+            st.write("DEBUG LYRICS — lyrics.ovh non OK, body:", resp.text[:200])
+        return None
 
-    # ---------- 2) Fallback lyrics.ovh ----------
-    try:
-        def fetch(a, t, label=""):
-            url = f"https://api.lyrics.ovh/v1/{quote(a)}/{quote(t)}"
-            st.write(f"DEBUG LYRICS — appel lyrics.ovh {label} :", url)
-            resp = requests.get(url, timeout=10)
-            st.write("DEBUG LYRICS — status code lyrics.ovh :", resp.status_code)
-            if resp.status_code == 200:
-                data = resp.json()
-                txt = data.get("lyrics")
-                if txt and "No lyrics found" not in txt:
-                    txt = txt.strip()
-                    st.write("DEBUG LYRICS — longueur paroles lyrics.ovh :", len(txt))
-                    return txt
-                else:
-                    st.write("DEBUG LYRICS — lyrics.ovh a répondu mais sans paroles utiles.")
-            else:
-                st.write("DEBUG LYRICS — lyrics.ovh non OK, body:", resp.text[:200])
-            return None
+    # 1) artiste complet
+    txt = fetch(artist_name, clean_title, label="[artist, title]")
+    if txt:
+        return txt
 
-        txt = fetch(artist_name, clean_title, label="[artist, title]")
-        if txt:
-            return txt
-
-        short_artist = artist_name.split()[-1]
-        txt = fetch(short_artist, clean_title, label="[short artist, title]")
-        if txt:
-            return txt
-
-    except Exception as e:
-        st.write("DEBUG LYRICS — ERREUR lyrics.ovh :", repr(e))
+    # 2) dernier mot du nom d’artiste (ex : "Stromae", "Laylow")
+    short_artist = artist_name.split()[-1]
+    txt = fetch(short_artist, clean_title, label="[short artist, title]")
+    if txt:
+        return txt
 
     st.write("DEBUG LYRICS — aucune source n’a retourné de paroles.")
     return None
