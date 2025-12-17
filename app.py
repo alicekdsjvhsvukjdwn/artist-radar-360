@@ -74,6 +74,122 @@ except Exception:
 # FONCTIONS UTILITAIRES GLOBALES
 # =========================================================
 
+def classify_tempo(bpm: float):
+    if bpm is None:
+        return "Inconnu", "Tempo non estimé."
+    if bpm < 80:
+        return "Lent", "Plutôt adapté à des ambiances posées / introspectives."
+    elif bpm < 110:
+        return "Modéré", "Zone mid-tempo polyvalente (rap, pop, r&b)."
+    elif bpm < 140:
+        return "Rapide", "Énergie naturelle pour bangers, club, formats dynamiques."
+    else:
+        return "Très rapide", "Très intense, à manier avec soin pour ne pas fatiguer l’auditeur."
+
+
+def classify_energy(avg_energy: float):
+    if avg_energy is None:
+        return "Inconnue", "Énergie non mesurée."
+    if avg_energy < 0.15:
+        return "Faible", "Titre plutôt doux / retenu, peu de punch perçu."
+    elif avg_energy < 0.30:
+        return "Moyenne", "Énergie modérée, laisse de la place à la voix / au texte."
+    else:
+        return "Élevée", "Titre assez puissant / agressif, bonne base pour formats dynamiques."
+
+
+def classify_brightness(avg_centroid: float):
+    if avg_centroid is None:
+        return "Inconnue", "Brillance non mesurée."
+    if avg_centroid < 1500:
+        return "Sombre / chaud", "Spectre plutôt grave, ambiance feutrée ou lourde."
+    elif avg_centroid < 3500:
+        return "Équilibrée", "Équilibre entre graves et aigus, écoute confortable."
+    else:
+        return "Brillante", "Spectre très aigu, peut donner un côté agressif ou moderne."
+
+
+def classify_dynamic(dynamic_range: float):
+    if dynamic_range is None:
+        return "Inconnue", "Dynamique non mesurée."
+    if dynamic_range < 0.1:
+        return "Très compressée", "Peu de variation, son 'collé', ressenti fort mais fatigant."
+    elif dynamic_range < 0.25:
+        return "Modérée", "Bonne présence avec quelques respirations."
+    else:
+        return "Respirante", "Beaucoup de variations, plus organique mais moins 'radio ready'."
+
+
+def interpret_lyrics_profile(text_polarity: float, subjectivity: float, vocab_size: int):
+    # Mood
+    if text_polarity is None:
+        mood_label = "Inconnu"
+        mood_comment = "Impossible d'estimer le ton émotionnel du texte."
+    elif text_polarity < -0.25:
+        mood_label = "Sombre / négatif"
+        mood_comment = "Thèmes plutôt tristes, en colère ou mélancoliques."
+    elif text_polarity > 0.25:
+        mood_label = "Lumineux / positif"
+        mood_comment = "Thèmes plutôt optimistes, chaleureux ou confiants."
+    else:
+        mood_label = "Ambivalent / neutre"
+        mood_comment = "Mélange de positif et de négatif ou ton plus descriptif."
+
+    # Subjectivité
+    if subjectivity is None:
+        subj_label = "Inconnue"
+        subj_comment = "Subjectivité non mesurée."
+    elif subjectivity < 0.3:
+        subj_label = "Plutôt factuel"
+        subj_comment = "Texte plus descriptif / narratif que très introspectif."
+    elif subjectivity < 0.6:
+        subj_label = "Mixte"
+        subj_comment = "Équilibre entre description et subjectivité personnelle."
+    else:
+        subj_label = "Très subjectif"
+        subj_comment = "Texte très centré sur le ressenti et le vécu personnel."
+
+    # Richesse lexicale (seuils heuristiques)
+    if vocab_size is None:
+        rich_label = "Inconnue"
+        rich_comment = "Richesse lexicale non calculée."
+    elif vocab_size < 150:
+        rich_label = "Simple"
+        rich_comment = "Vocabulaire resserré, bon pour la mémorisation / formats viraux."
+    elif vocab_size < 400:
+        rich_label = "Moyenne"
+        rich_comment = "Assez de variété pour raconter quelque chose sans perdre l’auditeur."
+    else:
+        rich_label = "Élevée"
+        rich_comment = "Vocabulaire dense, intéressant pour un public qui écoute les paroles."
+
+    return (mood_label, mood_comment,
+            subj_label, subj_comment,
+            rich_label, rich_comment)
+
+
+def interpret_dissonance(audio_mood: float, text_polarity: float):
+    """
+    Retourne (score, label, commentaire) pour la dissonance audio/texte.
+    """
+    if (audio_mood is None) or (text_polarity is None):
+        return None, "Non calculable", "Il manque soit l'analyse audio, soit l'analyse du texte."
+
+    text_valence = (text_polarity + 1) / 2  # [-1,1] -> [0,1]
+    dissonance = abs(audio_mood - text_valence)
+
+    if dissonance < 0.2:
+        label = "Très cohérent"
+        comment = "Ambiance sonore et texte vont dans la même direction émotionnelle."
+    elif dissonance < 0.4:
+        label = "Cohérent avec nuances"
+        comment = "Globalement aligné, avec quelques décalages intéressants."
+    else:
+        label = "Forte tension créative"
+        comment = "Décalage marqué entre son et texte : peut devenir une vraie signature si c'est assumé."
+
+    return dissonance, label, comment
+
 def interpret_spotify_popularity(score: int):
     """
     Donne une étiquette lisible pour un score de popularité artiste Spotify.
@@ -110,7 +226,6 @@ def interpret_genre_clarity(genres: list[str]):
             "Beaucoup de micro-genres : soit l’artiste est très hybride, "
             "soit le positionnement perçu est flou."
         )
-
 
 @st.cache_data
 def enrich_similar_with_spotify(similar_list):
@@ -751,6 +866,7 @@ def render_page_labo():
     2.1 Physique du signal (ADN sonore)
     2.2 Analyse sémantique (paroles)
     2.3 Score de dissonance (audio vs texte)
+    2.4 Synthèse & pistes d'action
     """
     if not st.session_state.artist_loaded:
         st.info("Charge d’abord un·e artiste pour accéder au labo.")
@@ -792,11 +908,20 @@ def render_page_labo():
 
     st.divider()
 
+    # Variables pour la synthèse finale
+    audio_mood = None
+    tempo = None
+    avg_energy = None
+    avg_centroid = None
+    dynamic_range = None
+    text_polarity = None
+    subjectivity = None
+    vocab_size = None
+
     # 2.1 Physique du signal (ADN sonore)
     st.markdown("#### 2.1 Physique du signal (ADN sonore)")
 
     itunes_data = get_itunes_preview_for_track(artist_name, track_title)
-    audio_mood = None  # proxy d'humeur audio (0-1)
 
     info_col1, info_col2 = st.columns([1, 3])
     with info_col1:
@@ -843,6 +968,20 @@ def render_page_labo():
             c3.metric("Brillance moyenne", int(avg_centroid))
             c4.metric("Dynamique", round(dynamic_range, 4))
 
+            # Interprétation textuelle
+            tempo_label, tempo_comment = classify_tempo(tempo)
+            energy_label, energy_comment = classify_energy(avg_energy)
+            bright_label, bright_comment = classify_brightness(avg_centroid)
+            dyn_label, dyn_comment = classify_dynamic(dynamic_range)
+
+            with st.expander("Lecture audio en clair"):
+                st.markdown(
+                    f"- **Tempo** : {tempo_label} – {tempo_comment}\n"
+                    f"- **Énergie** : {energy_label} – {energy_comment}\n"
+                    f"- **Brillance** : {bright_label} – {bright_comment}\n"
+                    f"- **Dynamique** : {dyn_label} – {dyn_comment}"
+                )
+
             # Waveform rapide
             df_wave = pd.DataFrame({"Amplitude": y[::200]})
             fig_wave = px.line(df_wave, y="Amplitude", title="Waveform (preview 30s)")
@@ -858,9 +997,6 @@ def render_page_labo():
 
     # 2.2 Analyse sémantique (NLP)
     st.markdown("#### 2.2 Analyse sémantique des paroles")
-
-    lyrics_text = None
-    text_polarity = None
 
     # Tentatives automatiques via lyrics.ovh
     lyrics_text = get_any_lyrics(artist_name, track_title)
@@ -884,10 +1020,23 @@ def render_page_labo():
         tokens = re.findall(r"\b\w+\b", lyrics_text.lower())
         vocab_size = len(set(tokens)) if tokens else 0
 
+        (mood_label, mood_comment,
+         subj_label, subj_comment,
+         rich_label, rich_comment) = interpret_lyrics_profile(
+            text_polarity, subjectivity, vocab_size
+        )
+
         c1, c2, c3 = st.columns(3)
         c1.metric("Polarité (-1 à 1)", round(text_polarity, 2))
         c2.metric("Subjectivité", round(subjectivity, 2))
-        c3.metric("Richesse lexicale", vocab_size)
+        c3.metric("Richesse lexicale (vocabulaire unique)", vocab_size)
+
+        with st.expander("Lecture texte en clair"):
+            st.markdown(
+                f"- **Ton général** : {mood_label} – {mood_comment}\n"
+                f"- **Subjectivité** : {subj_label} – {subj_comment}\n"
+                f"- **Richesse lexicale** : {rich_label} – {rich_comment}"
+            )
 
         with st.expander("Voir un extrait des paroles analysées"):
             st.text("\n".join(lyrics_text.split("\n")[:15]))
@@ -899,20 +1048,86 @@ def render_page_labo():
     # 2.3 Score de dissonance audio vs texte
     st.markdown("#### 2.3 Score de dissonance (audio vs texte)")
 
-    if (audio_mood is not None) and (text_polarity is not None):
-        # polarité texte [-1,1] → [0,1]
-        text_valence = (text_polarity + 1) / 2
-        dissonance = abs(audio_mood - text_valence)
+    diss_score, diss_label, diss_comment = interpret_dissonance(audio_mood, text_polarity)
 
-        st.metric("Score de dissonance (0-1)", round(dissonance, 2))
-
-        if dissonance > 0.4:
-            st.success("🎭 Forte tension créative entre ambiance sonore et contenu du texte.")
-        else:
-            st.info("🎯 Cohérence émotionnelle globale entre son et texte.")
+    if diss_score is None:
+        st.info(diss_comment)
     else:
-        st.info("Données insuffisantes pour calculer la dissonance (audio ou texte manquant).")
+        st.metric("Score de dissonance (0-1)", round(diss_score, 2))
+        if diss_score > 0.4:
+            st.success(f"🎭 {diss_label} – {diss_comment}")
+        else:
+            st.info(f"🎯 {diss_label} – {diss_comment}")
 
+    # 2.4 Synthèse & pistes d'action
+    st.divider()
+    st.markdown("#### 2.4 Synthèse & pistes d'action")
+
+    bullets = []
+
+    # Synthèse audio
+    if tempo is not None and avg_energy is not None:
+        tempo_label, _ = classify_tempo(tempo)
+        energy_label, _ = classify_energy(avg_energy)
+        bullets.append(
+            f"- **Audio** : tempo {tempo_label.lower()} avec énergie {energy_label.lower()}."
+        )
+
+    # Synthèse texte
+    if text_polarity is not None:
+        mood_label, _, subj_label, _, rich_label, _ = interpret_lyrics_profile(
+            text_polarity, subjectivity, vocab_size
+        )
+        bullets.append(
+            f"- **Texte** : ton plutôt {mood_label.lower()}, "
+            f"subjectivité {subj_label.lower()}, richesse {rich_label.lower()}."
+        )
+
+    # Synthèse dissonance
+    if diss_score is not None:
+        bullets.append(
+            f"- **Relation son / texte** : {diss_label.lower()} (score ≈ {diss_score:.2f})."
+        )
+
+    if bullets:
+        st.markdown("\n".join(bullets))
+
+        st.markdown("**Pistes possibles :**")
+        suggestions = []
+
+        # Exemples de règles simples
+        if tempo and tempo > 120 and text_polarity is not None and text_polarity < -0.2:
+            suggestions.append(
+                "- Mélancolie dansante : assumer le contraste clip / visuel pour en faire une signature."
+            )
+        if avg_energy and avg_energy < 0.15:
+            suggestions.append(
+                "- Énergie faible : si tu vises playlists dynamiques ou formats courts, "
+                "envisage de renforcer la batterie / la basse / la saturation."
+            )
+        if vocab_size and vocab_size > 400:
+            suggestions.append(
+                "- Vocabulaire très riche : parfait pour un public qui écoute les textes, "
+                "mais pense à un hook simple pour ne pas perdre les gens."
+            )
+        if diss_score is not None and diss_score < 0.2 and text_polarity is not None and text_polarity > 0.2:
+            suggestions.append(
+                "- Son et texte très positifs : idéal pour des campagnes feel-good, pubs, ou synchros lumineuses."
+            )
+
+        if suggestions:
+            for s in suggestions:
+                st.markdown(s)
+        else:
+            st.caption(
+                "Pas de recommandation spécifique générée automatiquement ici, "
+                "mais les métriques ci-dessus donnent déjà une base solide pour discuter DA / mix / storytelling."
+            )
+    else:
+        st.caption(
+            "Synthèse impossible : il manque soit l'analyse audio, soit l'analyse texte."
+        )
+        
 # -------------------------------------
 # PAGE 3 : LE COMPARATEUR (DATASET OFFLINE)
 # -------------------------------------
