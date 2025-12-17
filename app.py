@@ -442,14 +442,15 @@ def get_any_lyrics(artist_name: str, track_title: str):
 
     # ---------- 1) Tentative via GENIUS ----------
     try:
-        # on laisse Genius gérer le fuzzy matching
-        song = genius.search_song(title=clean_title, artist=artist_name)
+        # ⚠️ ici : arguments POSITIONNELS, pas 'title='
+        song = genius.search_song(clean_title, artist_name)
         if song and song.lyrics:
             txt = _clean_lyrics_text(song.lyrics)
             if txt:
                 return txt
-    except Exception:
-        # on ne casse pas l'app si Genius rate
+    except Exception as e:
+        # Si tu veux voir l'erreur pendant le dev, décommente :
+        # st.write("Erreur Genius :", e)
         pass
 
     # ---------- 2) Fallback lyrics.ovh ----------
@@ -474,7 +475,8 @@ def get_any_lyrics(artist_name: str, track_title: str):
         if txt:
             return txt
 
-    except Exception:
+    except Exception as e:
+        # st.write("Erreur lyrics.ovh :", e)
         pass
 
     # ---------- Rien trouvé ----------
