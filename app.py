@@ -74,6 +74,46 @@ except Exception:
 # FONCTIONS UTILITAIRES GLOBALES
 # =========================================================
 
+# Option : traduction auto vers l'anglais pour l'analyse de texte
+DEEPL_API_KEY = st.secrets.get("DEEPL_API_KEY", None)
+
+def translate_to_english(text: str):
+    """
+    Traduit le texte vers l'anglais avec l'API DeepL si possible.
+    Retourne (texte_analyse, langue_source_estimee).
+    Si pas de clé ou erreur : renvoie le texte d'origine + 'unknown'.
+    """
+    if not text:
+        return text, "unknown"
+
+    if DEEPL_API_KEY is None:
+        # Pas de clé → on ne traduit pas
+        return text, "unknown"
+
+    try:
+        url = "https://api-free.deepl.com/v2/translate"
+        data = {
+            "auth_key": DEEPL_API_KEY,
+            "text": text,
+            "target_lang": "EN",
+        }
+        resp = requests.post(url, data=data, timeout=10)
+        resp.raise_for_status()
+        data_json = resp.json()
+
+        translations = data_json.get("translations", [])
+        if not translations:
+            return text, "unknown"
+
+        t0 = translations[0]
+        translated = t0.get("text", text)
+        source_lang = t0.get("detected_source_language", "unknown")
+
+        return translated, source_lang.lower()
+    except Exception:
+        # En cas d'erreur API, on continue avec le texte original
+        return text, "unknown"
+
 def classify_tempo(bpm: float):
     if bpm is None:
         return "Inconnu", "Tempo non estimé."
@@ -878,13 +918,16 @@ def render_page_labo():
     st.markdown("### 📄 PAGE 2 – LE LABO D'ANALYSE")
     st.caption("Analyse audio & sémantique – pas pour juger, pour comprendre le produit.")
 
+    # -------------------------------------------------
     # 2.0 – Sélection d'un titre (toujours via Spotify)
+    # -------------------------------------------------
     try:
         top_resp = sp.artist_top_tracks(data["id"], country="FR")
         tracks_raw = top_resp.get("tracks", [])
     except Exception:
         tracks_raw = []
 
+    # On garde les titres où l'artiste principal est bien celui sélectionné
     tracks = [
         t for t in tracks_raw
         if any(a.get("id") == data["id"] for a in t.get("artists", []))
@@ -894,12 +937,24 @@ def render_page_labo():
         st.warning("Aucun titre exploitable trouvé pour cet artiste.")
         return
 
-    labels = [f"{t['name']} – {t['album']['name']}" for t in tracks]
+    # Labels raccourcis pour le dropdown
+    def make_track_label(i: int) -> str:
+        t = tracks[i]
+        name = t.get("name", "Sans titre")
+        album = t.get("album", {}).get("name", "")
+
+        max_len_album = 25
+        if album and len(album) > max_len_album:
+            album = album[:max_len_album - 3] + "..."
+
+        return f"{name} – {album}" if album else name
+
+    options = list(range(len(tracks)))
 
     selected_index = st.selectbox(
         "Choisis un titre à analyser",
-        options=list(range(len(tracks))),
-        format_func=lambda i: labels[i],
+        options=options,
+        format_func=make_track_label,
         key="labo_track_select"
     )
 
@@ -917,8 +972,13 @@ def render_page_labo():
     text_polarity = None
     subjectivity = None
     vocab_size = None
+    detected_lang = "unknown"
+    analyzed_text = None
+    lyrics_text = None
 
+    # -------------------------------------------------
     # 2.1 Physique du signal (ADN sonore)
+    # -------------------------------------------------
     st.markdown("#### 2.1 Physique du signal (ADN sonore)")
 
     itunes_data = get_itunes_preview_for_track(artist_name, track_title)
@@ -995,13 +1055,14 @@ def render_page_labo():
 
     st.divider()
 
-    # 2.2 Analyse sémantique (NLP)
+    # -------------------------------------------------
+    # 2.2 Analyse sémantique des paroles
+    # -------------------------------------------------
     st.markdown("#### 2.2 Analyse sémantique des paroles")
 
-    # Tentatives automatiques via lyrics.ovh
+    # 1) Récupération des paroles
     lyrics_text = get_any_lyrics(artist_name, track_title)
 
-    # Fallback manuel
     if not lyrics_text:
         st.info("Paroles introuvables automatiquement. Tu peux les coller ci-dessous si tu veux une analyse.")
         manual = st.text_area(
@@ -1012,11 +1073,15 @@ def render_page_labo():
             lyrics_text = manual.strip()
 
     if lyrics_text:
-        blob = TextBlob(lyrics_text)
+        # 2) Traduction éventuelle vers l'anglais (DeepL ou autre API)
+        analyzed_text, detected_lang = translate_to_english(lyrics_text)
+
+        # 3) Analyse sentiment sur la version anglaise (originale ou traduite)
+        blob = TextBlob(analyzed_text)
         text_polarity = float(blob.sentiment.polarity)
         subjectivity = float(blob.sentiment.subjectivity)
 
-        # Richesse lexicale simple
+        # Richesse lexicale : calculée sur le texte original
         tokens = re.findall(r"\b\w+\b", lyrics_text.lower())
         vocab_size = len(set(tokens)) if tokens else 0
 
@@ -1033,19 +1098,28 @@ def render_page_labo():
 
         with st.expander("Lecture texte en clair"):
             st.markdown(
+                f"- **Langue détectée / déclarée** : `{detected_lang}` (via API de traduction)\n"
                 f"- **Ton général** : {mood_label} – {mood_comment}\n"
                 f"- **Subjectivité** : {subj_label} – {subj_comment}\n"
-                f"- **Richesse lexicale** : {rich_label} – {rich_comment}"
+                f"- **Richesse lexicale** : {rich_label} – {rich_comment}\n"
+                f"- **Note** : l'analyse est faite sur une éventuelle traduction automatique vers l'anglais, "
+                "il peut y avoir des nuances perdues (ironie, jeu de mots, slang…)."
             )
 
-        with st.expander("Voir un extrait des paroles analysées"):
+        with st.expander("Voir un extrait des paroles originales analysées"):
             st.text("\n".join(lyrics_text.split("\n")[:15]))
+
+        if analyzed_text and analyzed_text != lyrics_text:
+            with st.expander("Voir un extrait du texte utilisé pour l'analyse (EN)"):
+                st.text("\n".join(analyzed_text.split("\n")[:15]))
     else:
         st.info("Aucune parole disponible pour l’instant.")
 
     st.divider()
 
-    # 2.3 Score de dissonance audio vs texte
+    # -------------------------------------------------
+    # 2.3 Score de dissonance (audio vs texte)
+    # -------------------------------------------------
     st.markdown("#### 2.3 Score de dissonance (audio vs texte)")
 
     diss_score, diss_label, diss_comment = interpret_dissonance(audio_mood, text_polarity)
@@ -1059,7 +1133,9 @@ def render_page_labo():
         else:
             st.info(f"🎯 {diss_label} – {diss_comment}")
 
+    # -------------------------------------------------
     # 2.4 Synthèse & pistes d'action
+    # -------------------------------------------------
     st.divider()
     st.markdown("#### 2.4 Synthèse & pistes d'action")
 
@@ -1127,7 +1203,7 @@ def render_page_labo():
         st.caption(
             "Synthèse impossible : il manque soit l'analyse audio, soit l'analyse texte."
         )
-        
+
 # -------------------------------------
 # PAGE 3 : LE COMPARATEUR (DATASET OFFLINE)
 # -------------------------------------
